@@ -134,6 +134,30 @@ def init_db():
     
     conn.commit()
     conn.close()
+    
+    # Check if we need to add the created_by column
+    add_missing_columns()
+
+def add_missing_columns():
+    """Add missing columns to existing database tables"""
+    conn = sqlite3.connect('compliance_survey.db')
+    c = conn.cursor()
+    
+    try:
+        # Check if created_by column exists in responses table
+        c.execute("PRAGMA table_info(responses)")
+        columns = [column[1] for column in c.fetchall()]
+        
+        if 'created_by' not in columns:
+            st.info("🔄 Updating database schema...")
+            c.execute("ALTER TABLE responses ADD COLUMN created_by TEXT")
+            conn.commit()
+            st.success("✅ Database schema updated successfully!")
+            
+    except Exception as e:
+        st.warning(f"Database schema update: {str(e)}")
+    
+    conn.close()
 
 # Enhanced ISIC data management
 @st.cache_data
@@ -506,14 +530,32 @@ def get_all_interviews():
     """Get all interviews from database"""
     try:
         conn = sqlite3.connect('compliance_survey.db')
-        query = """
-        SELECT 
-            interview_id, business_name, district, primary_sector, 
-            business_size, status, submission_date, last_modified,
-            total_compliance_cost, total_compliance_time, risk_score, created_by
-        FROM responses 
-        ORDER BY last_modified DESC
-        """
+        
+        # First check if created_by column exists
+        c = conn.cursor()
+        c.execute("PRAGMA table_info(responses)")
+        columns = [column[1] for column in c.fetchall()]
+        
+        if 'created_by' in columns:
+            query = """
+            SELECT 
+                interview_id, business_name, district, primary_sector, 
+                business_size, status, submission_date, last_modified,
+                total_compliance_cost, total_compliance_time, risk_score, created_by
+            FROM responses 
+            ORDER BY last_modified DESC
+            """
+        else:
+            # Fallback query without created_by column
+            query = """
+            SELECT 
+                interview_id, business_name, district, primary_sector, 
+                business_size, status, submission_date, last_modified,
+                total_compliance_cost, total_compliance_time, risk_score
+            FROM responses 
+            ORDER BY last_modified DESC
+            """
+        
         df = pd.read_sql(query, conn)
         conn.close()
         return df
@@ -525,16 +567,35 @@ def get_user_interviews(username):
     """Get interviews created by specific user"""
     try:
         conn = sqlite3.connect('compliance_survey.db')
-        query = """
-        SELECT 
-            interview_id, business_name, district, primary_sector, 
-            business_size, status, submission_date, last_modified,
-            total_compliance_cost, total_compliance_time, risk_score
-        FROM responses 
-        WHERE created_by = ?
-        ORDER BY last_modified DESC
-        """
-        df = pd.read_sql(query, conn, params=(username,))
+        
+        # Check if created_by column exists
+        c = conn.cursor()
+        c.execute("PRAGMA table_info(responses)")
+        columns = [column[1] for column in c.fetchall()]
+        
+        if 'created_by' in columns:
+            query = """
+            SELECT 
+                interview_id, business_name, district, primary_sector, 
+                business_size, status, submission_date, last_modified,
+                total_compliance_cost, total_compliance_time, risk_score
+            FROM responses 
+            WHERE created_by = ?
+            ORDER BY last_modified DESC
+            """
+            df = pd.read_sql(query, conn, params=(username,))
+        else:
+            # If created_by column doesn't exist, return all interviews for now
+            query = """
+            SELECT 
+                interview_id, business_name, district, primary_sector, 
+                business_size, status, submission_date, last_modified,
+                total_compliance_cost, total_compliance_time, risk_score
+            FROM responses 
+            ORDER BY last_modified DESC
+            """
+            df = pd.read_sql(query, conn)
+        
         conn.close()
         return df
     except Exception as e:
@@ -566,8 +627,16 @@ def get_database_stats():
         stats['draft_interviews'] = pd.read_sql("SELECT COUNT(*) as count FROM responses WHERE status = 'draft'", conn).iloc[0]['count']
         
         # User-specific stats
-        if st.session_state.user_role == 'interviewer':
-            stats['user_interviews'] = pd.read_sql("SELECT COUNT(*) as count FROM responses WHERE created_by = ?", conn, params=(st.session_state.current_user,)).iloc[0]['count']
+        if st.session_state.user_role == 'interviewer' and st.session_state.current_user:
+            # Check if created_by column exists
+            c = conn.cursor()
+            c.execute("PRAGMA table_info(responses)")
+            columns = [column[1] for column in c.fetchall()]
+            
+            if 'created_by' in columns:
+                stats['user_interviews'] = pd.read_sql("SELECT COUNT(*) as count FROM responses WHERE created_by = ?", conn, params=(st.session_state.current_user,)).iloc[0]['count']
+            else:
+                stats['user_interviews'] = 0
         
         # Sector distribution
         stats['sector_dist'] = pd.read_sql("SELECT primary_sector, COUNT(*) as count FROM responses GROUP BY primary_sector", conn)
