@@ -1,0 +1,21 @@
+# Core Application Dependencies
+streamlit>=1.28.0
+pandas>=2.0.0
+plotly>=5.15.0
+streamlit-tags>=1.2.0
+
+# Data Processing & Utilities
+numpy>=1.24.0
+openpyxl>=3.0.0
+python-dateutil>=2.8.0
+
+# Enhanced Export Capabilities
+xlsxwriter>=3.1.0
+
+# Development & Testing (optional)
+pytest>=7.0.0
+black>=23.0.0
+flake8>=6.0.0
+
+# Environment Management
+python-dotenv>=1.0.0
