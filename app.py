@@ -10,6 +10,7 @@ from streamlit_tags import st_tags
 import time
 import io
 import base64
+import hashlib
 
 # Set page config MUST be first
 st.set_page_config(
@@ -19,10 +20,19 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Admin credentials (in production, use proper authentication)
+# Enhanced credentials with individual interviewer passwords
+INTERVIEWER_CREDENTIALS = {
+    "Fizie Fulumaka": {"password": "fizie2024", "role": "interviewer"},
+    "Sanderson Mweemba": {"password": "sanderson2024", "role": "interviewer"},
+    "Anastazia Mtonga": {"password": "anastazia2024", "role": "interviewer"},
+    "Sarah Namutowe": {"password": "sarah2024", "role": "interviewer"},
+    "Boris Divjak": {"password": "boris2024", "role": "interviewer"},
+    "Other": {"password": "other2024", "role": "interviewer"}
+}
+
 ADMIN_CREDENTIALS = {
-    "admin": "compliance2024",
-    "researcher": "data2024"
+    "admin": {"password": "compliance2024", "role": "admin"},
+    "researcher": {"password": "data2024", "role": "researcher"}
 }
 
 # Initialize database with enhanced schema
@@ -72,7 +82,8 @@ def init_db():
             last_modified TIMESTAMP,
             total_compliance_cost REAL DEFAULT 0,
             total_compliance_time INTEGER DEFAULT 0,
-            risk_score REAL DEFAULT 0
+            risk_score REAL DEFAULT 0,
+            created_by TEXT
         )
     ''')
     
@@ -107,6 +118,17 @@ def init_db():
             action TEXT,
             timestamp TIMESTAMP,
             details TEXT
+        )
+    ''')
+    
+    # User sessions table
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS user_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT,
+            login_time TIMESTAMP,
+            logout_time TIMESTAMP,
+            session_duration INTEGER
         )
     ''')
     
@@ -266,95 +288,10 @@ def search_isic_codes_enhanced(search_term, isic_df):
 
 # Enhanced data for dropdowns
 DISTRICTS = ["Lusaka", "Kitwe", "Kasama", "Ndola", "Livingstone", "Other (Please specify)"]
-INTERVIEWERS = ["Fizie Fulumaka", "Sanderson Mweemba", "Anastazia Mtonga", "Sarah Namutowe", "Boris Divjak", "Other (Please specify)"]
+INTERVIEWERS = list(INTERVIEWER_CREDENTIALS.keys())
 
 # Application modes
 APPLICATION_MODES = ["Entirely In-Person", "Mixed", "Entirely Online"]
-
-# License and permit data
-LICENSES_PERMITS = {
-    "Agribusiness": {
-        "National & Core Business Licenses": [
-            "PACRA Certificate of Incorporation / Business Name Registration",
-            "ZRA Tax Registration (Income Tax, VAT, PAYE)",
-            "ZRA Tax Clearance Certificate (Annual)",
-            "NAPSA Registration",
-            "NHIMA Registration",
-            "Workers' Compensation Fund Control Board Registration",
-            "Zambia Development Agency (ZDA) License",
-            "Citizen Economic Empowerment Commission (CEEC) Certificate",
-            "Other (Please specify)"
-        ],
-        "Sector-Specific & Environmental Licenses": [
-            "Ministry of Agriculture Permit",
-            "Zambia Environmental Management Agency (ZEMA) License / EIA Permit",
-            "Plant Pests and Diseases Act Permit",
-            "Fertilizer License from Ministry of Agriculture",
-            "Pesticides and Toxics Commission License",
-            "Veterinary Council License",
-            "Meat Board License",
-            "Dairy License from Ministry of Fisheries and Livestock",
-            "Food and Drugs Act License",
-            "Public Health Act Permit",
-            "Water Rights / Permit from WARMA",
-            "Forestry Department Permit",
-            "Other (Please specify)"
-        ],
-        "Local Authority Licenses": [
-            "Local Authority Trading License / Business Permit (Annual)",
-            "Public Health Certificate",
-            "Signage / Advertisement Permit",
-            "Building Permit",
-            "Fire Certificate",
-            "Other (Please specify)"
-        ]
-    },
-    "Construction": {
-        "National & Core Business Licenses": [
-            "PACRA Certificate of Incorporation / Business Name Registration",
-            "ZRA Tax Registration (Income Tax, VAT, PAYE)",
-            "ZRA Tax Clearance Certificate (Annual)",
-            "NAPSA Registration",
-            "NHIMA Registration",
-            "Workers' Compensation Fund Control Board Registration",
-            "National Council for Construction (NCC) Registration",
-            "Citizen Economic Empowerment Commission (CEEC) Certificate",
-            "Other (Please specify)"
-        ],
-        "Sector-Specific & Environmental Licenses": [
-            "Zambia Environmental Management Agency (ZEMA) License / EIA Permit",
-            "Ministry of Lands & Natural Resources Permit",
-            "Water Rights / Permit from WARMA",
-            "Energy Regulation Board (ERB) Permit",
-            "Explosives License",
-            "Project Registration with NCC",
-            "Other (Please specify)"
-        ],
-        "Local Authority Licenses & Permits": [
-            "Local Authority Trading License / Business Permit",
-            "Building Permit",
-            "Planning Permission",
-            "Occupation Certificate",
-            "Fire Certificate",
-            "Public Health Certificate",
-            "Signage / Advertisement Permit",
-            "Road Cutting / Encroachment Permit",
-            "Waste Management / Dumping Permit",
-            "Other (Please specify)"
-        ]
-    }
-}
-
-# Regulatory authorities categorized
-REGULATORY_AUTHORITIES = {
-    "National Tax & Social Security": ["PACRA", "ZRA", "NAPSA", "NHIMA", "Workers' Compensation Fund"],
-    "Development & Empowerment": ["Zambia Development Agency", "CEEC"],
-    "Sector-Specific National": ["Ministry of Agriculture", "Ministry of Lands & Natural Resources", "NCC", 
-                                "Ministry of Fisheries and Livestock", "Forestry Department"],
-    "Environmental & Resources": ["ZEMA", "WARMA", "Energy Regulation Board"],
-    "Local Government": ["Local Authority/Council"],
-    "Other": ["Other (Please specify)"]
-}
 
 # Enhanced session state initialization
 def initialize_session_state():
@@ -379,17 +316,15 @@ def initialize_session_state():
         'bulk_procedure_mode': False,
         'quick_manual_mode': False,
         'admin_logged_in': False,
-        'admin_username': None,
-        'app_mode': 'data_collection'
+        'interviewer_logged_in': False,
+        'current_user': None,
+        'user_role': None,
+        'app_mode': 'login'
     }
     
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
-    
-    # Load ISIC data if not loaded
-    if st.session_state.isic_df is None:
-        st.session_state.isic_df = load_isic_dataframe()
 
 # Database functions
 def save_draft(data, interview_id=None):
@@ -436,7 +371,7 @@ def save_draft(data, interview_id=None):
                     permit_comparison_local=?, cost_comparison_national=?,
                     cost_comparison_local=?, business_climate_rating=?,
                     reform_priorities=?, last_modified=?, total_compliance_cost=?,
-                    total_compliance_time=?, risk_score=?
+                    total_compliance_time=?, risk_score=?, created_by=?
                 WHERE interview_id=?
             ''', (
                 data.get('interviewer_name', ''),
@@ -475,6 +410,7 @@ def save_draft(data, interview_id=None):
                 total_cost,
                 total_time,
                 risk_score,
+                st.session_state.current_user,
                 interview_id
             ))
         else:
@@ -518,7 +454,8 @@ def save_draft(data, interview_id=None):
                 current_time,
                 total_cost,
                 total_time,
-                risk_score
+                risk_score,
+                st.session_state.current_user
             )
             
             c.execute('''
@@ -532,8 +469,8 @@ def save_draft(data, interview_id=None):
                     compliance_cost_percentage, permit_comparison_national, permit_comparison_local,
                     cost_comparison_national, cost_comparison_local, business_climate_rating,
                     reform_priorities, status, submission_date, last_modified,
-                    total_compliance_cost, total_compliance_time, risk_score
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    total_compliance_cost, total_compliance_time, risk_score, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', insert_data)
         
         conn.commit()
@@ -573,7 +510,7 @@ def get_all_interviews():
         SELECT 
             interview_id, business_name, district, primary_sector, 
             business_size, status, submission_date, last_modified,
-            total_compliance_cost, total_compliance_time, risk_score
+            total_compliance_cost, total_compliance_time, risk_score, created_by
         FROM responses 
         ORDER BY last_modified DESC
         """
@@ -582,6 +519,26 @@ def get_all_interviews():
         return df
     except Exception as e:
         st.error(f"Error loading interviews: {str(e)}")
+        return pd.DataFrame()
+
+def get_user_interviews(username):
+    """Get interviews created by specific user"""
+    try:
+        conn = sqlite3.connect('compliance_survey.db')
+        query = """
+        SELECT 
+            interview_id, business_name, district, primary_sector, 
+            business_size, status, submission_date, last_modified,
+            total_compliance_cost, total_compliance_time, risk_score
+        FROM responses 
+        WHERE created_by = ?
+        ORDER BY last_modified DESC
+        """
+        df = pd.read_sql(query, conn, params=(username,))
+        conn.close()
+        return df
+    except Exception as e:
+        st.error(f"Error loading user interviews: {str(e)}")
         return pd.DataFrame()
 
 def get_interview_details(interview_id):
@@ -607,6 +564,10 @@ def get_database_stats():
         stats['total_interviews'] = pd.read_sql("SELECT COUNT(*) as count FROM responses", conn).iloc[0]['count']
         stats['submitted_interviews'] = pd.read_sql("SELECT COUNT(*) as count FROM responses WHERE status = 'submitted'", conn).iloc[0]['count']
         stats['draft_interviews'] = pd.read_sql("SELECT COUNT(*) as count FROM responses WHERE status = 'draft'", conn).iloc[0]['count']
+        
+        # User-specific stats
+        if st.session_state.user_role == 'interviewer':
+            stats['user_interviews'] = pd.read_sql("SELECT COUNT(*) as count FROM responses WHERE created_by = ?", conn, params=(st.session_state.current_user,)).iloc[0]['count']
         
         # Sector distribution
         stats['sector_dist'] = pd.read_sql("SELECT primary_sector, COUNT(*) as count FROM responses GROUP BY primary_sector", conn)
@@ -648,7 +609,21 @@ def log_admin_action(username, action, details=""):
     except Exception as e:
         st.error(f"Error logging admin action: {str(e)}")
 
-# Enhanced Business Activities with ISIC Integration - SEPARATED FROM FORMS
+def log_user_session(username, login_time, logout_time=None, duration=None):
+    """Log user session information"""
+    try:
+        conn = sqlite3.connect('compliance_survey.db')
+        current_time = datetime.now().isoformat()
+        conn.execute(
+            "INSERT INTO user_sessions (username, login_time, logout_time, session_duration) VALUES (?, ?, ?, ?)",
+            (username, login_time, logout_time, duration)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        st.error(f"Error logging user session: {str(e)}")
+
+# Enhanced Business Activities with ISIC Integration
 def business_activities_section():
     """Enhanced business activities section with ISIC integration"""
     
@@ -674,10 +649,10 @@ def business_activities_section():
         st.write("• Include all major revenue streams")
         st.write("• Mention any specialized activities")
     
-    # ISIC Code Selection Section - SEPARATE FROM FORM
+    # ISIC Code Selection Section
     st.subheader("📊 ISIC Code Classification")
     
-    # Enhanced ISIC search and selection - OUTSIDE OF FORM
+    # Enhanced ISIC search and selection
     isic_search_col1, isic_search_col2 = st.columns([3, 1])
     
     with isic_search_col1:
@@ -737,7 +712,7 @@ def business_activities_section():
         else:
             st.warning("No ISIC codes found. Try different search terms.")
     
-    # Manual ISIC code entry - SEPARATE FROM FORM
+    # Manual ISIC code entry
     with st.expander("➕ Add Custom ISIC Code", expanded=False):
         manual_col1, manual_col2, manual_col3 = st.columns([2, 2, 1])
         
@@ -799,7 +774,7 @@ def display_selected_isic_code(code, index, prefix):
             st.session_state.selected_isic_codes.pop(index)
             st.rerun()
 
-# Enhanced Section B with Multiple Entry Modes
+# Quick Manual Procedure Entry
 def quick_manual_procedure():
     """Ultra-fast manual procedure entry"""
     st.subheader("⚡ Quick Manual Entry")
@@ -886,6 +861,7 @@ def quick_manual_procedure():
             else:
                 st.error("Please fill in Procedure Name and Regulatory Body")
 
+# Enhanced Bulk Procedures Capture
 def enhanced_bulk_procedures_capture():
     """Enhanced bulk capture with more options"""
     
@@ -1213,6 +1189,7 @@ def add_license_from_template(license_name, license_data, template_data):
     
     st.session_state.procedures_list.append(procedure)
 
+# Single Procedure Capture
 def single_procedure_capture():
     """Single procedure detailed capture"""
     
@@ -1226,7 +1203,6 @@ def single_procedure_capture():
             procedure_name = st.text_input("Procedure/License Name *", 
                                          placeholder="e.g., Business License, Environmental Permit",
                                          key="proc_name_single")
-            # REMOVED DROPDOWN - Using text input instead for regulatory body
             regulatory_authority = st.text_input("Regulatory Body *", 
                                                placeholder="e.g., Local Council, ZRA, PACRA",
                                                key="authority_single")
@@ -1235,7 +1211,6 @@ def single_procedure_capture():
             current_status = st.selectbox("Current Status", 
                                         ["Not Started", "In Progress", "Completed", "Delayed", "Rejected"],
                                         key="status_single")
-            # ADDED: Mode of Application
             application_mode = st.selectbox("Mode of Application *", APPLICATION_MODES, key="app_mode_single")
         
         # Time Analysis
@@ -1341,7 +1316,7 @@ def single_procedure_capture():
                     'complexity': complexity,
                     'renewable': renewable,
                     'renewal_frequency': renewal_freq,
-                    'application_mode': application_mode,  # ADDED: Mode of application
+                    'application_mode': application_mode,
                     'documents': documents,
                     'challenges': challenges
                 }
@@ -1352,6 +1327,7 @@ def single_procedure_capture():
             else:
                 st.error("Please fill in required fields (Procedure Name and Regulatory Body)")
 
+# Interactive Procedures Manager
 def interactive_procedures_manager():
     """Manage procedures with enhanced editing"""
     
@@ -1394,7 +1370,7 @@ def display_editable_procedure(procedure, index):
         with info_col1:
             st.write(f"**Status:** {procedure['status']}")
             st.write(f"**Complexity:** {procedure['complexity']}/5")
-            st.write(f"**Application Mode:** {procedure['application_mode']}")  # ADDED: Application mode display
+            st.write(f"**Application Mode:** {procedure['application_mode']}")
         
         with info_col2:
             st.write(f"**Prep Time:** {procedure['prep_days']} days")
@@ -1423,7 +1399,7 @@ def display_editable_procedure(procedure, index):
             st.write(f"**Challenges:** {procedure['challenges']}")
     
     with col2:
-        # Action buttons - SEPARATE FROM FORMS
+        # Action buttons
         if st.button("✏️ Edit", key=f"edit_proc_{index}"):
             st.session_state.active_procedure_index = index
         
@@ -1452,7 +1428,6 @@ def display_editable_procedure(procedure, index):
                 new_unofficial = st.number_input("Unofficial Payments", min_value=0.0, value=procedure.get('unofficial_payments', 0.0),
                                                key=f"edit_unofficial_{index}")
             
-            # ADDED: Application mode in edit form
             new_application_mode = st.selectbox("Application Mode", APPLICATION_MODES, 
                                               index=APPLICATION_MODES.index(procedure['application_mode']) if procedure['application_mode'] in APPLICATION_MODES else 0,
                                               key=f"edit_app_mode_{index}")
@@ -1465,7 +1440,7 @@ def display_editable_procedure(procedure, index):
                         'complexity': new_complexity,
                         'official_fees': new_official_fees,
                         'unofficial_payments': new_unofficial,
-                        'application_mode': new_application_mode  # ADDED: Update application mode
+                        'application_mode': new_application_mode
                     })
                     st.session_state.active_procedure_index = None
                     st.rerun()
@@ -1522,7 +1497,7 @@ def analyze_single_procedure(procedure):
         
         st.metric("Overall Risk", f"{total_risk:.1f}/10")
         st.metric("Complexity", f"{procedure['complexity']}/5")
-        st.metric("Application Mode", procedure['application_mode'])  # ADDED: Application mode in analysis
+        st.metric("Application Mode", procedure['application_mode'])
         st.metric("Total Cost", f"ZMW {sum(costs.values()):,.0f}")
         
         # Risk indicator
@@ -1530,6 +1505,7 @@ def analyze_single_procedure(procedure):
         st.markdown(f"<div style='background-color: {risk_color}; height: 10px; width: {total_risk * 10}%; border-radius: 5px;'></div>", 
                     unsafe_allow_html=True)
 
+# Enhanced Section B with Multiple Entry Modes
 def enhanced_section_b():
     """Enhanced Section B with multiple entry modes"""
     
@@ -1629,69 +1605,127 @@ def generate_procedures_report():
         for mode, count in mode_counts.items():
             st.write(f"- {mode}: {count} procedures")
 
-def export_procedures_to_csv():
-    """Export procedures to CSV"""
-    if not st.session_state.procedures_list:
-        return None
+# Authentication System
+def login_system():
+    """Enhanced login system for both interviewers and admins"""
+    st.title("🔐 Zambia Regulatory Compliance Survey")
+    st.subheader("Login to Access the System")
     
-    df = pd.DataFrame(st.session_state.procedures_list)
-    return df.to_csv(index=False)
-
-def import_procedures_from_csv(uploaded_file):
-    """Import procedures from CSV"""
-    try:
-        df = pd.read_csv(uploaded_file)
-        procedures = df.to_dict('records')
-        
-        # Validate required fields
-        valid_procedures = []
-        for proc in procedures:
-            if 'procedure' in proc and 'authority' in proc:
-                # Set default values for missing fields
-                proc.setdefault('status', 'Completed')
-                proc.setdefault('application_mode', 'Mixed')
-                proc.setdefault('complexity', 3)
-                proc.setdefault('official_fees', 0)
-                proc.setdefault('total_days', 30)
-                valid_procedures.append(proc)
-        
-        st.session_state.procedures_list.extend(valid_procedures)
-        return len(valid_procedures)
-    except Exception as e:
-        st.error(f"Error importing CSV: {str(e)}")
-        return 0
-
-def procedures_data_management():
-    """Enhanced data management for procedures"""
-    st.subheader("💾 Procedures Data Management")
+    # Login type selection
+    login_type = st.radio("Login as:", ["Interviewer", "Administrator"], horizontal=True)
     
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.write("**Export Options**")
-        if st.session_state.procedures_list:
-            csv_data = export_procedures_to_csv()
-            st.download_button(
-                label="📥 Download Procedures (CSV)",
-                data=csv_data,
-                file_name=f"procedures_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+    with st.form("login_form"):
+        if login_type == "Interviewer":
+            username = st.selectbox("Select Interviewer", list(INTERVIEWER_CREDENTIALS.keys()), key="interviewer_select")
         else:
-            st.info("No procedures to export")
-    
-    with col2:
-        st.write("**Import Options**")
-        uploaded_file = st.file_uploader("Upload procedures CSV", type=['csv'])
-        if uploaded_file:
-            if st.button("📤 Import Procedures", use_container_width=True):
-                count = import_procedures_from_csv(uploaded_file)
-                if count > 0:
-                    st.success(f"✅ Imported {count} procedures!")
-                    st.rerun()
+            username = st.selectbox("Username", list(ADMIN_CREDENTIALS.keys()), key="admin_select")
+        
+        password = st.text_input("Password", type="password", key="login_password")
+        
+        if st.form_submit_button("Login", use_container_width=True):
+            if login_type == "Interviewer":
+                credentials = INTERVIEWER_CREDENTIALS
+            else:
+                credentials = ADMIN_CREDENTIALS
+            
+            if username in credentials and password == credentials[username]["password"]:
+                st.session_state.current_user = username
+                st.session_state.user_role = credentials[username]["role"]
+                
+                if login_type == "Interviewer":
+                    st.session_state.interviewer_logged_in = True
+                    st.session_state.app_mode = 'data_collection'
+                else:
+                    st.session_state.admin_logged_in = True
+                    st.session_state.app_mode = 'admin_dashboard'
+                
+                # Log login session
+                log_user_session(username, datetime.now().isoformat())
+                log_admin_action(username, "login")
+                
+                st.success(f"Welcome {username}! Login successful!")
+                st.rerun()
+            else:
+                st.error("Invalid credentials. Please try again.")
 
-# Admin Dashboard and other functions remain the same as in the previous code
+def logout():
+    """Logout function for all user types"""
+    # Log logout session
+    if st.session_state.current_user:
+        log_user_session(
+            st.session_state.current_user, 
+            datetime.now().isoformat(), 
+            datetime.now().isoformat(),
+            0  # Session duration would be calculated in a real implementation
+        )
+        log_admin_action(st.session_state.current_user, "logout")
+    
+    # Reset all session states
+    st.session_state.interviewer_logged_in = False
+    st.session_state.admin_logged_in = False
+    st.session_state.current_user = None
+    st.session_state.user_role = None
+    st.session_state.app_mode = 'login'
+    
+    # Clear interview data
+    st.session_state.current_interview_id = None
+    st.session_state.form_data = {}
+    st.session_state.procedures_list = []
+    st.session_state.selected_isic_codes = []
+    st.session_state.business_activities_text = ""
+    st.session_state.current_section = 'A'
+    
+    st.success("Logged out successfully!")
+    st.rerun()
+
+# Enhanced Main Application
+def main():
+    initialize_session_state()
+    
+    # Load ISIC data if not loaded
+    if st.session_state.isic_df is None:
+        st.session_state.isic_df = load_isic_dataframe()
+    
+    # Route based on login status
+    if not st.session_state.interviewer_logged_in and not st.session_state.admin_logged_in:
+        login_system()
+    elif st.session_state.admin_logged_in:
+        admin_navigation()
+    else:
+        data_collection_navigation()
+
+def admin_navigation():
+    """Admin navigation"""
+    st.sidebar.title("🔧 Admin Panel")
+    st.sidebar.write(f"Logged in as: **{st.session_state.current_user}**")
+    st.sidebar.write(f"Role: **{st.session_state.user_role}**")
+    
+    if st.sidebar.button("🚪 Logout", use_container_width=True, key="admin_logout_btn"):
+        logout()
+    
+    st.sidebar.markdown("---")
+    
+    # Admin menu
+    menu_options = {
+        "Dashboard": "📊",
+        "Data Management": "💾", 
+        "User Management": "👥",
+        "System Tools": "🛠️"
+    }
+    
+    selected_menu = st.sidebar.radio("Menu", list(menu_options.keys()), 
+                                   format_func=lambda x: f"{menu_options[x]} {x}",
+                                   key="admin_menu")
+    
+    if selected_menu == "Dashboard":
+        admin_dashboard()
+    elif selected_menu == "Data Management":
+        display_all_interviews()
+    elif selected_menu == "User Management":
+        user_management_section()
+    elif selected_menu == "System Tools":
+        database_tools_section()
+
 def admin_dashboard():
     """Admin dashboard for database management"""
     
@@ -1883,6 +1917,63 @@ def data_export_section():
     else:
         st.info("No data available for export.")
 
+def user_management_section():
+    """User management section for admins"""
+    st.header("👥 User Management")
+    
+    tab1, tab2, tab3 = st.tabs(["User Statistics", "Session Logs", "Password Management"])
+    
+    with tab1:
+        st.subheader("User Statistics")
+        
+        # User interview counts
+        try:
+            conn = sqlite3.connect('compliance_survey.db')
+            user_stats = pd.read_sql("""
+                SELECT created_by, 
+                       COUNT(*) as total_interviews,
+                       SUM(CASE WHEN status = 'submitted' THEN 1 ELSE 0 END) as submitted,
+                       SUM(CASE WHEN status = 'draft' THEN 1 ELSE 0 END) as drafts
+                FROM responses 
+                GROUP BY created_by
+                ORDER BY total_interviews DESC
+            """, conn)
+            conn.close()
+            
+            if not user_stats.empty:
+                st.dataframe(user_stats, use_container_width=True)
+                
+                # Visualization
+                fig = px.bar(user_stats, x='created_by', y='total_interviews', 
+                           title="Interviews by User", color='created_by')
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No user statistics available yet.")
+        except Exception as e:
+            st.error(f"Error loading user statistics: {str(e)}")
+    
+    with tab2:
+        st.subheader("User Session Logs")
+        display_user_sessions()
+    
+    with tab3:
+        st.subheader("Password Management")
+        st.info("Password changes require system administrator access.")
+
+def display_user_sessions():
+    """Display user session logs"""
+    try:
+        conn = sqlite3.connect('compliance_survey.db')
+        sessions_df = pd.read_sql("SELECT * FROM user_sessions ORDER BY login_time DESC LIMIT 100", conn)
+        conn.close()
+        
+        if not sessions_df.empty:
+            st.dataframe(sessions_df, use_container_width=True)
+        else:
+            st.info("No session logs found.")
+    except Exception as e:
+        st.error(f"Error loading session logs: {str(e)}")
+
 def database_tools_section():
     """Database tools and maintenance"""
     st.subheader("🛠️ Database Tools")
@@ -1893,7 +1984,7 @@ def database_tools_section():
         if st.button("🔄 Refresh Database Cache", use_container_width=True, key="refresh_cache_btn"):
             st.session_state.isic_df = load_isic_dataframe()
             st.success("Database cache refreshed!")
-            log_admin_action(st.session_state.admin_username, "refresh_cache")
+            log_admin_action(st.session_state.current_user, "refresh_cache")
         
         if st.button("📊 Update Statistics", use_container_width=True, key="update_stats_btn"):
             st.rerun()
@@ -1908,7 +1999,7 @@ def database_tools_section():
                         conn.commit()
                         conn.close()
                         st.success("All draft interviews deleted!")
-                        log_admin_action(st.session_state.admin_username, "clear_drafts")
+                        log_admin_action(st.session_state.current_user, "clear_drafts")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Error deleting drafts: {str(e)}")
@@ -1962,7 +2053,7 @@ def display_interview_details(interview_id):
             for i, proc in enumerate(procedures, 1):
                 with st.expander(f"{i}. {proc['procedure']}"):
                     st.write(f"**Authority:** {proc['authority']}")
-                    st.write(f"**Application Mode:** {proc.get('application_mode', 'Not specified')}")  # ADDED: Application mode
+                    st.write(f"**Application Mode:** {proc.get('application_mode', 'Not specified')}")
                     st.write(f"**Cost:** ZMW {proc['official_fees']:,.0f}")
                     st.write(f"**Time:** {proc['total_days']} days")
                     st.write(f"**Complexity:** {proc['complexity']}/5")
@@ -1974,115 +2065,42 @@ def display_interview_details(interview_id):
             for i, reform in enumerate(reforms, 1):
                 st.write(f"{i}. {reform}")
 
-# Authentication
-def admin_login():
-    """Admin login form"""
-    st.title("🔐 Admin Login")
+def data_collection_navigation():
+    """Data collection navigation for interviewers"""
+    st.sidebar.title("📋 Interview Panel")
+    st.sidebar.write(f"Interviewer: **{st.session_state.current_user}**")
     
-    with st.form("admin_login"):
-        username = st.text_input("Username", key="admin_username")
-        password = st.text_input("Password", type="password", key="admin_password")
+    if st.sidebar.button("🚪 Logout", use_container_width=True, key="interviewer_logout_btn"):
+        logout()
+    
+    # Quick stats for interviewer
+    user_interviews = get_user_interviews(st.session_state.current_user)
+    if not user_interviews.empty:
+        st.sidebar.markdown("---")
+        st.sidebar.header("📈 My Statistics")
+        total = len(user_interviews)
+        submitted = len(user_interviews[user_interviews['status'] == 'submitted'])
+        drafts = len(user_interviews[user_interviews['status'] == 'draft'])
         
-        if st.form_submit_button("Login", use_container_width=True):
-            if username in ADMIN_CREDENTIALS and password == ADMIN_CREDENTIALS[username]:
-                st.session_state.admin_logged_in = True
-                st.session_state.admin_username = username
-                st.session_state.app_mode = 'admin_dashboard'
-                log_admin_action(username, "login")
-                st.success("Login successful!")
-                st.rerun()
-            else:
-                st.error("Invalid credentials")
-
-def admin_logout():
-    """Admin logout"""
-    log_admin_action(st.session_state.admin_username, "logout")
-    st.session_state.admin_logged_in = False
-    st.session_state.admin_username = None
-    st.session_state.app_mode = 'data_collection'
-    st.success("Logged out successfully!")
-    st.rerun()
-
-# Main application
-def main():
-    initialize_session_state()
-    
-    # App mode selection
-    if not st.session_state.admin_logged_in:
-        col1, col2 = st.columns([3, 1])
-        
-        with col1:
-            st.title("🏢 Zambia Regulatory Compliance Assessment")
-            st.subheader("Key Informant Interview Tool - Formal Businesses")
-        
-        with col2:
-            if st.button("🔐 Admin Login", use_container_width=True, key="admin_login_btn"):
-                st.session_state.app_mode = 'admin_login'
-    
-    # Route to appropriate section
-    if st.session_state.app_mode == 'admin_login':
-        admin_login()
-    elif st.session_state.admin_logged_in:
-        admin_navigation()
-    else:
-        data_collection_navigation()
-
-def admin_navigation():
-    """Admin navigation"""
-    st.sidebar.title("🔧 Admin Panel")
-    st.sidebar.write(f"Logged in as: **{st.session_state.admin_username}**")
-    
-    if st.sidebar.button("🚪 Logout", use_container_width=True, key="admin_logout_btn"):
-        admin_logout()
+        st.sidebar.write(f"**Total:** {total}")
+        st.sidebar.write(f"**Submitted:** {submitted}")
+        st.sidebar.write(f"**Drafts:** {drafts}")
     
     st.sidebar.markdown("---")
     
-    # Admin menu
-    menu_options = {
-        "Dashboard": "📊",
-        "Data Management": "💾", 
-        "Analytics": "📈",
-        "System Tools": "🛠️"
-    }
-    
-    selected_menu = st.sidebar.radio("Menu", list(menu_options.keys()), 
-                                   format_func=lambda x: f"{menu_options[x]} {x}",
-                                   key="admin_menu")
-    
-    if selected_menu == "Dashboard":
-        admin_dashboard()
-    elif selected_menu == "Data Management":
-        display_all_interviews()
-    elif selected_menu == "Analytics":
-        st.info("Advanced analytics features coming soon...")
-    elif selected_menu == "System Tools":
-        database_tools_section()
-
-def data_collection_navigation():
-    """Data collection navigation"""
     # Navigation
     sections = {
         'A': 'Interview & Business Profile',
         'B': 'Registration & Licensing', 
         'C': 'Ongoing Compliance',
         'D': 'Reform Priorities',
-        'Dashboard': 'Compliance Analysis'
+        'Dashboard': 'My Interviews',
+        'My_Data': 'My Data Management'
     }
     
-    # Navigation sidebar
-    with st.sidebar:
-        st.header("🧭 Navigation")
-        selected_section = st.radio("Go to Section:", list(sections.keys()), 
-                                  format_func=lambda x: f"Section {x}: {sections[x]}",
-                                  key="main_navigation")
-        
-        # Quick stats
-        if st.session_state.procedures_list:
-            st.header("📈 Quick Stats")
-            total_procedures = len(st.session_state.procedures_list)
-            total_cost = sum(p['official_fees'] + p.get('unofficial_payments', 0) for p in st.session_state.procedures_list)
-            st.write(f"Procedures: {total_procedures}")
-            st.write(f"Total Cost: ZMW {total_cost:,.0f}")
+    selected_section = st.sidebar.radio("Go to Section:", list(sections.keys()), 
+                                      format_func=lambda x: f"Section {x}: {sections[x]}",
+                                      key="main_navigation")
     
     # Update current section
     if selected_section != st.session_state.current_section:
@@ -2099,8 +2117,88 @@ def data_collection_navigation():
     elif st.session_state.current_section == 'D':
         display_section_d()
     elif st.session_state.current_section == 'Dashboard':
-        interactive_compliance_dashboard()
+        display_interviewer_dashboard()
+    elif st.session_state.current_section == 'My_Data':
+        display_interviewer_data_management()
 
+def display_interviewer_dashboard():
+    """Dashboard for individual interviewer"""
+    st.header("📊 My Interview Dashboard")
+    
+    user_interviews = get_user_interviews(st.session_state.current_user)
+    
+    if not user_interviews.empty:
+        # Summary metrics
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Interviews", len(user_interviews))
+        with col2:
+            submitted = len(user_interviews[user_interviews['status'] == 'submitted'])
+            st.metric("Submitted", submitted)
+        with col3:
+            drafts = len(user_interviews[user_interviews['status'] == 'draft'])
+            st.metric("Drafts", drafts)
+        with col4:
+            completion_rate = (submitted / len(user_interviews)) * 100 if len(user_interviews) > 0 else 0
+            st.metric("Completion Rate", f"{completion_rate:.1f}%")
+        
+        # Recent interviews
+        st.subheader("📋 My Recent Interviews")
+        st.dataframe(user_interviews, use_container_width=True)
+        
+        # Visualizations
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Status distribution
+            status_counts = user_interviews['status'].value_counts()
+            fig_status = px.pie(values=status_counts.values, names=status_counts.index, 
+                              title="Interview Status Distribution")
+            st.plotly_chart(fig_status, use_container_width=True)
+        
+        with col2:
+            # Sector distribution
+            if 'primary_sector' in user_interviews.columns:
+                sector_counts = user_interviews['primary_sector'].value_counts()
+                fig_sector = px.bar(x=sector_counts.index, y=sector_counts.values,
+                                  title="Interviews by Sector", color=sector_counts.index)
+                st.plotly_chart(fig_sector, use_container_width=True)
+    else:
+        st.info("You haven't conducted any interviews yet. Start with Section A!")
+
+def display_interviewer_data_management():
+    """Data management for individual interviewer"""
+    st.header("💾 My Data Management")
+    
+    user_interviews = get_user_interviews(st.session_state.current_user)
+    
+    if not user_interviews.empty:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Export My Data")
+            csv_data = user_interviews.to_csv(index=False)
+            st.download_button(
+                label="📥 Download My Interviews (CSV)",
+                data=csv_data,
+                file_name=f"my_interviews_{st.session_state.current_user}_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        with col2:
+            st.subheader("Quick Actions")
+            if st.button("🔄 Start New Interview", use_container_width=True):
+                reset_interview()
+                st.session_state.current_section = 'A'
+                st.rerun()
+            
+            if st.button("📊 View All My Data", use_container_width=True):
+                st.dataframe(user_interviews, use_container_width=True)
+    else:
+        st.info("No data available for export.")
+
+# Section A Display
 def display_section_a():
     """Section A with enhanced business activities"""
     st.header("📋 SECTION A: Interview & Business Profile")
@@ -2354,7 +2452,7 @@ def interactive_compliance_dashboard():
         analysis_data.append({
             'Procedure': procedure['procedure'],
             'Authority': procedure['authority'],
-            'Application Mode': procedure['application_mode'],  # ADDED: Application mode
+            'Application Mode': procedure['application_mode'],
             'Complexity': procedure['complexity'],
             'Total Cost': procedure['official_fees'] + procedure.get('unofficial_payments', 0),
             'Total Time': procedure['total_days'],
@@ -2390,7 +2488,7 @@ def interactive_compliance_dashboard():
         st.plotly_chart(fig_time, use_container_width=True)
     
     with tab3:
-        # ADDED: Application mode analysis
+        # Application mode analysis
         mode_counts = df['Application Mode'].value_counts()
         fig_mode = px.pie(values=mode_counts.values, names=mode_counts.index, 
                          title="Distribution of Application Modes")
@@ -2398,7 +2496,7 @@ def interactive_compliance_dashboard():
     
     with tab4:
         fig_risk = px.scatter(df, x='Total Cost', y='Total Time', size='Risk Score',
-                             color='Application Mode', hover_name='Procedure',  # ADDED: Color by application mode
+                             color='Application Mode', hover_name='Procedure',
                              title="Compliance Risk Matrix")
         st.plotly_chart(fig_risk, use_container_width=True)
 
