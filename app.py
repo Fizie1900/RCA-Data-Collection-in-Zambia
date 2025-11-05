@@ -350,7 +350,7 @@ def initialize_session_state():
         if key not in st.session_state:
             st.session_state[key] = value
 
-# Database functions
+# Database functions - FIXED: Correct number of columns
 def save_draft(data, interview_id=None):
     """Save form data as draft with enhanced calculations"""
     try:
@@ -381,7 +381,7 @@ def save_draft(data, interview_id=None):
         current_time = datetime.now().isoformat()
         
         if existing:
-            # Update existing draft
+            # Update existing draft - FIXED: Correct number of parameters
             c.execute('''
                 UPDATE responses SET
                     interviewer_name=?, interview_date=?, start_time=?, end_time=?,
@@ -438,7 +438,7 @@ def save_draft(data, interview_id=None):
                 interview_id
             ))
         else:
-            # Insert new draft
+            # Insert new draft - FIXED: Correct number of parameters (39 values for 39 columns)
             insert_data = (
                 interview_id,
                 data.get('interviewer_name', ''),
@@ -504,9 +504,36 @@ def save_draft(data, interview_id=None):
         st.error(f"Error saving draft: {str(e)}")
         return None
 
-def submit_final(interview_id):
-    """Mark draft as final submission"""
+def check_duplicate_business_name(business_name, current_interview_id=None):
+    """Check if business name already exists in database"""
     try:
+        conn = sqlite3.connect('compliance_survey.db')
+        c = conn.cursor()
+        
+        if current_interview_id:
+            # Check for duplicates excluding current interview
+            c.execute("SELECT COUNT(*) FROM responses WHERE business_name = ? AND interview_id != ?", 
+                     (business_name, current_interview_id))
+        else:
+            # Check for any duplicates
+            c.execute("SELECT COUNT(*) FROM responses WHERE business_name = ?", (business_name,))
+        
+        count = c.fetchone()[0]
+        conn.close()
+        return count > 0
+    except Exception as e:
+        st.error(f"Error checking duplicate business name: {str(e)}")
+        return False
+
+def submit_final(interview_id):
+    """Mark draft as final submission with validation"""
+    try:
+        # Check for duplicate business name before submission
+        business_name = st.session_state.form_data.get('business_name', '')
+        if check_duplicate_business_name(business_name, interview_id):
+            st.error(f"❌ Business name '{business_name}' already exists in the database. Please use a unique business name.")
+            return False
+        
         conn = sqlite3.connect('compliance_survey.db')
         c = conn.cursor()
         
@@ -517,6 +544,10 @@ def submit_final(interview_id):
         
         conn.commit()
         conn.close()
+        
+        # Log the submission
+        log_admin_action(st.session_state.current_user, "interview_submitted", f"Interview {interview_id} submitted")
+        
         return True
     except Exception as e:
         st.error(f"Error submitting final: {str(e)}")
@@ -1396,7 +1427,7 @@ def single_procedure_capture():
             else:
                 st.error("Please fill in required fields (Procedure Name and Regulatory Body)")
 
-# Interactive Procedures Manager
+# FIXED: Interactive Procedures Manager without nested expanders
 def interactive_procedures_manager():
     """Manage procedures with enhanced editing"""
     
@@ -1422,14 +1453,19 @@ def interactive_procedures_manager():
     with col4:
         st.metric("Avg Complexity", f"{avg_complexity:.1f}/5")
     
-    # Procedures table with editing
+    # Procedures table with editing - FIXED: No nested expanders
     for i, procedure in enumerate(st.session_state.procedures_list):
-        with st.expander(f"**{i+1}. {procedure['procedure']}** - {procedure['authority']} ({procedure['status']})", expanded=False):
-            display_editable_procedure(procedure, i)
+        # Create a container for each procedure instead of nested expanders
+        with st.container():
+            st.markdown(f"**{i+1}. {procedure['procedure']}** - {procedure['authority']} ({procedure['status']})")
+            
+            # Display procedure details directly without nested expanders
+            display_procedure_details(procedure, i)
+            
+            st.markdown("---")
 
-def display_editable_procedure(procedure, index):
-    """Display procedure with inline editing"""
-    
+def display_procedure_details(procedure, index):
+    """Display procedure details without nested expanders"""
     col1, col2 = st.columns([3, 1])
     
     with col1:
@@ -1457,11 +1493,12 @@ def display_editable_procedure(procedure, index):
         if procedure['renewable'] == "Yes":
             st.write(f"**Renewable:** Yes ({procedure.get('renewal_frequency', 'N/A')})")
         
-        # Documents
+        # Documents - FIXED: Use columns instead of expanders
         if procedure.get('documents'):
-            with st.expander("View Required Documents"):
-                for doc in procedure['documents']:
-                    st.write(f"• {doc}")
+            st.write("**Required Documents:**")
+            doc_text = " • " + "\n • ".join(procedure['documents'])
+            st.text_area("", value=doc_text, height=min(100, len(procedure['documents']) * 25), 
+                        key=f"docs_{index}", disabled=True, label_visibility="collapsed")
         
         # Challenges
         if procedure.get('challenges'):
@@ -1613,7 +1650,7 @@ def enhanced_section_b():
         st.info("🔧 **Single Detailed Mode** - Comprehensive data capture for individual procedures")
         single_procedure_capture()
     
-    # Display and manage existing procedures
+    # Display and manage existing procedures - FIXED: No nested expanders
     interactive_procedures_manager()
     
     # Enhanced save options
@@ -2267,9 +2304,9 @@ def display_interviewer_data_management():
     else:
         st.info("No data available for export.")
 
-# Section A Display
+# Section A Display with duplicate business name validation
 def display_section_a():
-    """Section A with enhanced business activities"""
+    """Section A with enhanced business activities and duplicate validation"""
     st.header("📋 SECTION A: Interview & Business Profile")
     
     with st.form("section_a_form"):
@@ -2287,6 +2324,11 @@ def display_section_a():
         col1, col2 = st.columns(2)
         with col1:
             business_name = st.text_input("Business Name *", key="business_name")
+            # Check for duplicate business name in real-time
+            if business_name and st.session_state.current_interview_id:
+                if check_duplicate_business_name(business_name, st.session_state.current_interview_id):
+                    st.error(f"⚠️ Business name '{business_name}' already exists in the database. Please use a unique business name.")
+            
             district = st.selectbox("Location (Town/District) *", DISTRICTS, key="district")
             physical_address = st.text_area("Physical Address", key="physical_address")
         with col2:
@@ -2338,6 +2380,16 @@ def display_section_a():
             employees_parttime = st.number_input("Part-time Employees", min_value=0, value=0, key="employees_parttime")
         
         if st.form_submit_button("💾 Save Section A", use_container_width=True):
+            # Validate required fields
+            if not business_name:
+                st.error("❌ Business Name is required!")
+                return
+                
+            # Check for duplicate business name before saving
+            if check_duplicate_business_name(business_name, st.session_state.current_interview_id):
+                st.error(f"❌ Business name '{business_name}' already exists in the database. Please use a unique business name.")
+                return
+            
             # Save all data
             st.session_state.form_data.update({
                 'interviewer_name': interviewer,
@@ -2434,7 +2486,7 @@ def display_section_c():
                 st.success("✅ Section C saved successfully!")
 
 def display_section_d():
-    """Section D - Reform Priorities"""
+    """Section D - Reform Priorities with enhanced submission"""
     st.header("💡 SECTION D: Reform Priorities")
     
     with st.form("section_d_form"):
@@ -2456,11 +2508,20 @@ def display_section_d():
             key="reform_priorities"
         )
         
+        # Enhanced submission validation
+        business_name = st.session_state.form_data.get('business_name', '')
+        has_duplicate = False
+        
+        if business_name and st.session_state.current_interview_id:
+            has_duplicate = check_duplicate_business_name(business_name, st.session_state.current_interview_id)
+            if has_duplicate:
+                st.error(f"❌ Cannot submit: Business name '{business_name}' already exists in the database. Please use a unique business name.")
+        
         col1, col2 = st.columns(2)
         with col1:
-            save_btn = st.form_submit_button("💾 Save Section D", use_container_width=True)
+            save_btn = st.form_submit_button("💾 Save Section D", use_container_width=True, disabled=has_duplicate)
         with col2:
-            submit_btn = st.form_submit_button("🚀 Submit Complete Interview", use_container_width=True)
+            submit_btn = st.form_submit_button("🚀 Submit Complete Interview", use_container_width=True, disabled=has_duplicate)
         
         if save_btn:
             st.session_state.form_data['reform_priorities'] = reforms
@@ -2470,11 +2531,37 @@ def display_section_d():
                 st.success("✅ Section D saved successfully!")
         
         if submit_btn:
+            # Final validation before submission
+            if not business_name:
+                st.error("❌ Business Name is required for submission!")
+                return
+                
+            if has_duplicate:
+                st.error("❌ Cannot submit: Duplicate business name detected!")
+                return
+                
             st.session_state.form_data['reform_priorities'] = reforms
             interview_id = save_draft(st.session_state.form_data, st.session_state.current_interview_id)
             if interview_id and submit_final(interview_id):
+                # Show success notification
                 st.balloons()
                 st.success("🎉 Interview submitted successfully!")
+                
+                # Show detailed submission notification
+                with st.expander("📋 Submission Details", expanded=True):
+                    st.write(f"**Interview ID:** {interview_id}")
+                    st.write(f"**Business Name:** {business_name}")
+                    st.write(f"**Submitted by:** {st.session_state.current_user}")
+                    st.write(f"**Submission Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                    st.write(f"**Total Procedures:** {len(st.session_state.procedures_list)}")
+                    
+                    # Calculate summary metrics
+                    total_cost = sum(p['official_fees'] + p.get('unofficial_payments', 0) for p in st.session_state.procedures_list)
+                    total_time = sum(p['total_days'] for p in st.session_state.procedures_list)
+                    
+                    st.write(f"**Total Compliance Cost:** ZMW {total_cost:,.0f}")
+                    st.write(f"**Total Compliance Time:** {total_time} days")
+                
                 show_completion_actions()
 
 def show_completion_actions():
@@ -2485,7 +2572,8 @@ def show_completion_actions():
     
     with col1:
         if st.button("📄 Download Summary", key="download_summary_btn"):
-            st.info("Summary download feature")
+            # Generate and download summary
+            generate_interview_summary()
     
     with col2:
         if st.button("📊 View Analysis", key="view_analysis_btn"):
@@ -2495,6 +2583,33 @@ def show_completion_actions():
     with col3:
         if st.button("🔄 New Interview", key="new_interview_btn"):
             reset_interview()
+
+def generate_interview_summary():
+    """Generate and download interview summary"""
+    try:
+        # Create summary data
+        summary_data = {
+            'Interview ID': [st.session_state.current_interview_id],
+            'Business Name': [st.session_state.form_data.get('business_name', '')],
+            'Interviewer': [st.session_state.form_data.get('interviewer_name', '')],
+            'Submission Date': [datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+            'Total Procedures': [len(st.session_state.procedures_list)],
+            'Total Cost': [sum(p['official_fees'] + p.get('unofficial_payments', 0) for p in st.session_state.procedures_list)],
+            'Total Time': [sum(p['total_days'] for p in st.session_state.procedures_list)]
+        }
+        
+        df = pd.DataFrame(summary_data)
+        csv = df.to_csv(index=False)
+        
+        st.download_button(
+            label="📥 Download Summary (CSV)",
+            data=csv,
+            file_name=f"interview_summary_{st.session_state.current_interview_id}.csv",
+            mime="text/csv",
+            key="download_summary"
+        )
+    except Exception as e:
+        st.error(f"Error generating summary: {str(e)}")
 
 def reset_interview():
     """Reset the interview"""
