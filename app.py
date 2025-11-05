@@ -171,7 +171,22 @@ def get_table_columns():
     except Exception as e:
         st.error(f"Error getting table columns: {str(e)}")
         return []
-
+def diagnose_table_structure():
+    """Diagnose the exact table structure"""
+    try:
+        conn = sqlite3.connect('compliance_survey.db')
+        c = conn.cursor()
+        c.execute("PRAGMA table_info(responses)")
+        columns = c.fetchall()
+        st.subheader("📊 Database Table Structure")
+        st.write("Column details (cid, name, type, notnull, default_value, pk):")
+        for col in columns:
+            st.write(f"  {col}")
+        conn.close()
+        return columns
+    except Exception as e:
+        st.error(f"Error diagnosing table: {str(e)}")
+        return []
 # Enhanced ISIC data management
 @st.cache_data
 def load_isic_dataframe():
