@@ -311,7 +311,7 @@ def search_isic_codes_enhanced(search_term, isic_df):
         return []
 
 # Enhanced data for dropdowns
-DISTRICTS = ["Lusaka", "Kitwe", "Kasama", "Ndola", "Livingstone", "Other (Please specify)"]
+DISTRICTS = ["Lusaka", "Kitwe", "Kasama"]
 INTERVIEWERS = list(INTERVIEWER_CREDENTIALS.keys())
 
 # Application modes
