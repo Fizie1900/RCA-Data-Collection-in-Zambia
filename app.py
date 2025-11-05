@@ -12,6 +12,8 @@ import io
 import base64
 import hashlib
 
+from interview_editor import interview_editor_main, InterviewEditor
+from analytics_dashboard import analytics_main, create_interactive_dashboard
 # Set page config MUST be first
 st.set_page_config(
     page_title="Zambia Regulatory Compliance Survey",
@@ -684,7 +686,26 @@ def get_database_stats():
     except Exception as e:
         st.error(f"Error loading statistics: {str(e)}")
         return {}
-
+        
+def add_quick_edit_options():
+    """Add quick edit options to data management views"""
+    if st.session_state.get('admin_logged_in', False):
+        # Use session state to track if we've already shown this in the current context
+        if 'quick_edit_shown' not in st.session_state:
+            st.session_state.quick_edit_shown = set()
+        
+        current_context = str(st.session_state.get('_runnable_script_hash', 'default'))
+        
+        if current_context not in st.session_state.quick_edit_shown:
+            st.sidebar.markdown("---")
+            st.sidebar.subheader("🛠️ Quick Actions")
+            
+            if st.sidebar.button("✏️ Open Interview Editor", use_container_width=True, key="quick_edit_unique"):
+                st.session_state.current_section = 'Edit_Interviews'
+                st.rerun()
+            
+            st.session_state.quick_edit_shown.add(current_context)
+            
 def log_admin_action(username, action, details=""):
     """Log admin actions"""
     try:
@@ -1813,7 +1834,7 @@ def main():
         data_collection_navigation()
 
 def admin_navigation():
-    """Admin navigation"""
+    """Enhanced Admin navigation with Analytics and Editor"""
     st.sidebar.title("🔧 Admin Panel")
     st.sidebar.write(f"Logged in as: **{st.session_state.current_user}**")
     st.sidebar.write(f"Role: **{st.session_state.user_role}**")
@@ -1823,10 +1844,12 @@ def admin_navigation():
     
     st.sidebar.markdown("---")
     
-    # Admin menu
+    # Enhanced admin menu with editor
     menu_options = {
         "Dashboard": "📊",
         "Data Management": "💾", 
+        "Edit Interviews": "✏️",
+        "Analytics": "📈",
         "User Management": "👥",
         "System Tools": "🛠️"
     }
@@ -1839,6 +1862,10 @@ def admin_navigation():
         admin_dashboard()
     elif selected_menu == "Data Management":
         display_all_interviews()
+    elif selected_menu == "Edit Interviews":  # NEW OPTION
+        interview_editor_main()
+    elif selected_menu == "Analytics":
+        analytics_main()
     elif selected_menu == "User Management":
         user_management_section()
     elif selected_menu == "System Tools":
@@ -1883,7 +1910,9 @@ def admin_dashboard():
                 fig_district = px.bar(stats['district_dist'], x='district', y='count',
                                     title="Interviews by District", color='district')
                 st.plotly_chart(fig_district, use_container_width=True)
-    
+  
+    # In admin_dashboard() function, add:
+    add_quick_edit_options()
     # Data Management
     st.header("💾 Data Management")
     
@@ -1927,7 +1956,9 @@ def display_all_interviews():
             display_interview_details(selected_interview)
     else:
         st.info("No interviews found in the database.")
-
+    
+    # CORRECT PLACEMENT - Add quick edit options AFTER the main content
+    add_quick_edit_options()
 def search_and_filter_interviews():
     """Search and filter interviews"""
     st.subheader("🔍 Search & Filter Interviews")
