@@ -134,9 +134,6 @@ def init_db():
     
     conn.commit()
     conn.close()
-    
-    # Check if we need to add the created_by column
-    add_missing_columns()
 
 def add_missing_columns():
     """Add missing columns to existing database tables"""
@@ -159,34 +156,6 @@ def add_missing_columns():
     
     conn.close()
 
-def get_table_columns():
-    """Get the actual columns from the responses table"""
-    try:
-        conn = sqlite3.connect('compliance_survey.db')
-        c = conn.cursor()
-        c.execute("PRAGMA table_info(responses)")
-        columns = [column[1] for column in c.fetchall()]
-        conn.close()
-        return columns
-    except Exception as e:
-        st.error(f"Error getting table columns: {str(e)}")
-        return []
-def diagnose_table_structure():
-    """Diagnose the exact table structure"""
-    try:
-        conn = sqlite3.connect('compliance_survey.db')
-        c = conn.cursor()
-        c.execute("PRAGMA table_info(responses)")
-        columns = c.fetchall()
-        st.subheader("📊 Database Table Structure")
-        st.write("Column details (cid, name, type, notnull, default_value, pk):")
-        for col in columns:
-            st.write(f"  {col}")
-        conn.close()
-        return columns
-    except Exception as e:
-        st.error(f"Error diagnosing table: {str(e)}")
-        return []
 # Enhanced ISIC data management
 @st.cache_data
 def load_isic_dataframe():
@@ -378,9 +347,9 @@ def initialize_session_state():
         if key not in st.session_state:
             st.session_state[key] = value
 
-# Database functions - FIXED: Correct number of columns
-def save_draft_dynamic(data, interview_id=None):
-    """Dynamic save draft that adapts to table structure"""
+# Database functions - FIXED VERSION
+def save_draft(data, interview_id=None):
+    """Save form data as draft with enhanced calculations"""
     try:
         conn = sqlite3.connect('compliance_survey.db')
         c = conn.cursor()
@@ -388,24 +357,28 @@ def save_draft_dynamic(data, interview_id=None):
         if not interview_id:
             interview_id = generate_interview_id()
         
-        # Calculate metrics
+        # Calculate total compliance metrics
         procedure_data = data.get('procedure_data', [])
         total_cost = sum(proc.get('official_fees', 0) + proc.get('unofficial_payments', 0) for proc in procedure_data)
         total_time = sum(proc.get('total_days', 0) for proc in procedure_data)
-        risk_score = min((total_cost / 100000 + total_time / 365) * 10, 10)
+        
+        # Calculate risk score (simplified)
+        risk_score = min((total_cost / 100000 + total_time / 365) * 10, 10)  # Scale to 0-10
         
         # Check if record exists
         c.execute("SELECT id FROM responses WHERE interview_id = ?", (interview_id,))
         existing = c.fetchone()
         
-        # Prepare data
+        # Prepare data for insertion
         isic_codes = data.get('isic_codes', [])
         reform_priorities = data.get('reform_priorities', [])
         procedure_data_json = json.dumps(procedure_data)
+        
+        # Use string conversion for datetime to avoid deprecation warning
         current_time = datetime.now().isoformat()
         
         if existing:
-            # Update existing (same as before)
+            # Update existing draft
             c.execute('''
                 UPDATE responses SET
                     interviewer_name=?, interview_date=?, start_time=?, end_time=?,
@@ -462,74 +435,56 @@ def save_draft_dynamic(data, interview_id=None):
                 interview_id
             ))
         else:
-            # Get table structure to build dynamic INSERT
-            c.execute("PRAGMA table_info(responses)")
-            columns_info = c.fetchall()
-            column_names = [col[1] for col in columns_info]
+            # Insert new draft - FIXED: Using NULL for auto-increment id
+            insert_data = (
+                interview_id,
+                data.get('interviewer_name', ''),
+                data.get('interview_date', ''),
+                data.get('start_time', ''),
+                data.get('end_time', ''),
+                data.get('business_name', ''),
+                data.get('district', ''),
+                data.get('physical_address', ''),
+                data.get('contact_person', ''),
+                data.get('email', ''),
+                data.get('phone', ''),
+                data.get('primary_sector', ''),
+                data.get('legal_status', ''),
+                data.get('business_size', ''),
+                data.get('ownership_structure', ''),
+                data.get('gender_owner', ''),
+                data.get('business_activities', ''),
+                json.dumps(isic_codes),
+                data.get('year_established', 0),
+                data.get('turnover_range', ''),
+                data.get('employees_fulltime', 0),
+                data.get('employees_parttime', 0),
+                procedure_data_json,
+                data.get('completion_time_local', 0.0),
+                data.get('completion_time_national', 0.0),
+                data.get('completion_time_dk', 0.0),
+                data.get('compliance_cost_percentage', 0.0),
+                data.get('permit_comparison_national', 0),
+                data.get('permit_comparison_local', 0),
+                data.get('cost_comparison_national', 0),
+                data.get('cost_comparison_local', 0),
+                data.get('business_climate_rating', 0),
+                json.dumps(reform_priorities),
+                'draft',
+                current_time,
+                current_time,
+                total_cost,
+                total_time,
+                risk_score,
+                st.session_state.current_user
+            )
             
-            st.info(f"Table columns: {column_names}")
-            st.info(f"Number of columns: {len(column_names)}")
-            
-            # Build the insert dynamically
-            placeholders = ', '.join(['?' for _ in range(len(column_names))])
-            column_list = ', '.join(column_names)
-            
-            # Prepare values in the correct order
-            values_map = {
-                'interview_id': interview_id,
-                'interviewer_name': data.get('interviewer_name', ''),
-                'interview_date': data.get('interview_date', ''),
-                'start_time': data.get('start_time', ''),
-                'end_time': data.get('end_time', ''),
-                'business_name': data.get('business_name', ''),
-                'district': data.get('district', ''),
-                'physical_address': data.get('physical_address', ''),
-                'contact_person': data.get('contact_person', ''),
-                'email': data.get('email', ''),
-                'phone': data.get('phone', ''),
-                'primary_sector': data.get('primary_sector', ''),
-                'legal_status': data.get('legal_status', ''),
-                'business_size': data.get('business_size', ''),
-                'ownership_structure': data.get('ownership_structure', ''),
-                'gender_owner': data.get('gender_owner', ''),
-                'business_activities': data.get('business_activities', ''),
-                'isic_codes': json.dumps(isic_codes),
-                'year_established': data.get('year_established', 0),
-                'turnover_range': data.get('turnover_range', ''),
-                'employees_fulltime': data.get('employees_fulltime', 0),
-                'employees_parttime': data.get('employees_parttime', 0),
-                'procedure_data': procedure_data_json,
-                'completion_time_local': data.get('completion_time_local', 0.0),
-                'completion_time_national': data.get('completion_time_national', 0.0),
-                'completion_time_dk': data.get('completion_time_dk', 0.0),
-                'compliance_cost_percentage': data.get('compliance_cost_percentage', 0.0),
-                'permit_comparison_national': data.get('permit_comparison_national', 0),
-                'permit_comparison_local': data.get('permit_comparison_local', 0),
-                'cost_comparison_national': data.get('cost_comparison_national', 0),
-                'cost_comparison_local': data.get('cost_comparison_local', 0),
-                'business_climate_rating': data.get('business_climate_rating', 0),
-                'reform_priorities': json.dumps(reform_priorities),
-                'status': 'draft',
-                'submission_date': current_time,
-                'last_modified': current_time,
-                'total_compliance_cost': total_cost,
-                'total_compliance_time': total_time,
-                'risk_score': risk_score,
-                'created_by': st.session_state.current_user
-            }
-            
-            # For id column, use NULL if it exists
-            if 'id' in column_names:
-                values_map['id'] = None
-            
-            # Build values in correct order
-            values = [values_map.get(col, None) for col in column_names]
-            
-            st.info(f"Inserting {len(values)} values for {len(column_names)} columns")
-            
-            # Execute dynamic insert
-            query = f"INSERT INTO responses ({column_list}) VALUES ({placeholders})"
-            c.execute(query, values)
+            # FIXED INSERT STATEMENT - includes NULL for auto-increment id
+            c.execute('''
+                INSERT INTO responses VALUES (
+                    NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
+            ''', insert_data)
         
         conn.commit()
         conn.close()
@@ -539,6 +494,7 @@ def save_draft_dynamic(data, interview_id=None):
         import traceback
         st.error(f"Error details: {traceback.format_exc()}")
         return None
+
 def check_duplicate_business_name(business_name, current_interview_id=None):
     """Check if business name already exists in database"""
     try:
@@ -758,7 +714,7 @@ def log_user_session(username, login_time, logout_time=None, duration=None):
     except Exception as e:
         st.error(f"Error logging user session: {str(e)}")
 
-# Enhanced Business Activities with ISIC Integration
+# Enhanced Business Activities with ISIC Integration - FIXED VERSION
 def business_activities_section():
     """Enhanced business activities section with ISIC integration"""
     
@@ -787,28 +743,20 @@ def business_activities_section():
     # ISIC Code Selection Section
     st.subheader("📊 ISIC Code Classification")
     
-    # Enhanced ISIC search and selection
-    isic_search_col1, isic_search_col2 = st.columns([3, 1])
+    # Enhanced ISIC search and selection - FIXED: Auto-search on input
+    search_term = st.text_input(
+        "🔍 Search ISIC codes by code or description:",
+        placeholder="e.g., agriculture, construction, 0111, manufacturing",
+        key="isic_search_main",
+        value=st.session_state.isic_search_term
+    )
     
-    with isic_search_col1:
-        search_term = st.text_input(
-            "🔍 Search ISIC codes by code or description:",
-            placeholder="e.g., agriculture, construction, 0111, manufacturing",
-            key="isic_search_main",
-            value=st.session_state.isic_search_term
-        )
-    
-    with isic_search_col2:
-        st.write("")  # Spacer for alignment
-        st.write("")  # Spacer for alignment
-        search_clicked = st.button("Search", key="search_isic_main")
-    
-    # Handle search outside of form context
-    if search_clicked and search_term:
+    # Update search term in session state
+    if search_term != st.session_state.isic_search_term:
         st.session_state.isic_search_term = search_term
-        st.rerun()
+        # Don't rerun here to avoid constant refreshing
     
-    # Display search results
+    # Display search results automatically when there's a search term
     if st.session_state.isic_search_term and st.session_state.isic_df is not None:
         with st.spinner("Searching ISIC codes..."):
             search_results = search_isic_codes_enhanced(
@@ -844,7 +792,7 @@ def business_activities_section():
                         st.info(f"**ISIC {result['code']}**: {result['title']}")
             
             st.markdown("---")
-        else:
+        elif st.session_state.isic_search_term:  # Only show warning if there was a search term but no results
             st.warning("No ISIC codes found. Try different search terms.")
     
     # Manual ISIC code entry
@@ -1324,7 +1272,7 @@ def add_license_from_template(license_name, license_data, template_data):
     
     st.session_state.procedures_list.append(procedure)
 
-# Single Procedure Capture
+# Single Procedure Capture - FIXED VERSION with working external support
 def single_procedure_capture():
     """Single procedure detailed capture"""
     
@@ -1381,22 +1329,45 @@ def single_procedure_capture():
             travel_costs = st.number_input("Travel & Incidentals (ZMW)", min_value=0.0, value=0.0,
                                          key="travel_costs_single")
         
-        # External Support
+        # External Support - FIXED: Working conditional fields
         st.write("**🛠️ External Support**")
         support_col1, support_col2, support_col3 = st.columns(3)
         
         with support_col1:
             external_support = st.radio("Hired External Support?", ["No", "Yes"], 
                                       horizontal=True, key="external_support_single")
+        
+        # Initialize session state for external support if not exists
+        if 'external_support_active' not in st.session_state:
+            st.session_state.external_support_active = False
+        
+        # Update session state when radio button changes
+        if external_support == "Yes":
+            st.session_state.external_support_active = True
+        else:
+            st.session_state.external_support_active = False
+        
         with support_col2:
-            external_cost = st.number_input("Support Cost (ZMW)", min_value=0.0, value=0.0,
-                                          disabled=(external_support == "No"),
-                                          key="external_cost_single")
+            if st.session_state.external_support_active:
+                external_cost = st.number_input("Support Cost (ZMW)", min_value=0.0, value=0.0,
+                                              key="external_cost_single")
+            else:
+                external_cost = 0.0
+                # Show disabled field for better UX
+                st.number_input("Support Cost (ZMW)", min_value=0.0, value=0.0, 
+                              disabled=True, key="external_cost_disabled")
+        
         with support_col3:
-            external_reason = st.selectbox("Primary Reason", 
-                                         ["Saves Time", "Expertise Required", "Connections/Relationships", "Complexity"],
-                                         disabled=(external_support == "No"),
-                                         key="external_reason_single")
+            if st.session_state.external_support_active:
+                external_reason = st.selectbox("Primary Reason", 
+                                             ["Saves Time", "Expertise Required", "Connections/Relationships", "Complexity"],
+                                             key="external_reason_single")
+            else:
+                external_reason = ""
+                # Show disabled field for better UX
+                st.selectbox("Primary Reason", 
+                           ["Saves Time", "Expertise Required", "Connections/Relationships", "Complexity"],
+                           disabled=True, key="external_reason_disabled")
         
         # Complexity & Renewal
         st.write("**📊 Assessment**")
@@ -1415,6 +1386,7 @@ def single_procedure_capture():
                                            key="renewal_freq_single")
             else:
                 renewal_freq = "N/A"
+                st.text_input("Renewal Frequency", value="N/A", disabled=True, key="renewal_freq_disabled")
         
         # Documents & Challenges
         st.write("**📄 Requirements & Challenges**")
@@ -1462,7 +1434,7 @@ def single_procedure_capture():
             else:
                 st.error("Please fill in required fields (Procedure Name and Regulatory Body)")
 
-# FIXED: Interactive Procedures Manager without nested expanders
+# FIXED: Interactive Procedures Manager
 def interactive_procedures_manager():
     """Manage procedures with enhanced editing"""
     
@@ -1488,19 +1460,19 @@ def interactive_procedures_manager():
     with col4:
         st.metric("Avg Complexity", f"{avg_complexity:.1f}/5")
     
-    # Procedures table with editing - FIXED: No nested expanders
+    # Procedures table with editing
     for i, procedure in enumerate(st.session_state.procedures_list):
-        # Create a container for each procedure instead of nested expanders
+        # Create a container for each procedure
         with st.container():
             st.markdown(f"**{i+1}. {procedure['procedure']}** - {procedure['authority']} ({procedure['status']})")
             
-            # Display procedure details directly without nested expanders
+            # Display procedure details
             display_procedure_details(procedure, i)
             
             st.markdown("---")
 
 def display_procedure_details(procedure, index):
-    """Display procedure details without nested expanders"""
+    """Display procedure details"""
     col1, col2 = st.columns([3, 1])
     
     with col1:
@@ -1528,12 +1500,17 @@ def display_procedure_details(procedure, index):
         if procedure['renewable'] == "Yes":
             st.write(f"**Renewable:** Yes ({procedure.get('renewal_frequency', 'N/A')})")
         
-        # Documents - FIXED: Use columns instead of expanders
+        # External support info
+        if procedure.get('external_support') == "Yes":
+            st.write(f"**External Support:** Yes (ZMW {procedure.get('external_cost', 0):,.0f})")
+            if procedure.get('external_reason'):
+                st.write(f"**Reason:** {procedure['external_reason']}")
+        
+        # Documents
         if procedure.get('documents'):
             st.write("**Required Documents:**")
-            doc_text = " • " + "\n • ".join(procedure['documents'])
-            st.text_area("", value=doc_text, height=min(100, len(procedure['documents']) * 25), 
-                        key=f"docs_{index}", disabled=True, label_visibility="collapsed")
+            for doc in procedure['documents']:
+                st.write(f"• {doc}")
         
         # Challenges
         if procedure.get('challenges'):
@@ -1685,7 +1662,7 @@ def enhanced_section_b():
         st.info("🔧 **Single Detailed Mode** - Comprehensive data capture for individual procedures")
         single_procedure_capture()
     
-    # Display and manage existing procedures - FIXED: No nested expanders
+    # Display and manage existing procedures
     interactive_procedures_manager()
     
     # Enhanced save options
@@ -1819,16 +1796,14 @@ def logout():
     st.success("Logged out successfully!")
     st.rerun()
 
-
 # Enhanced Main Application
 def main():
     initialize_session_state()
     
-    
     # Load ISIC data if not loaded
     if st.session_state.isic_df is None:
         st.session_state.isic_df = load_isic_dataframe()
-    diagnose_table_structure()
+    
     # Route based on login status
     if not st.session_state.interviewer_logged_in and not st.session_state.admin_logged_in:
         login_system()
@@ -2595,77 +2570,6 @@ def reset_interview():
     st.session_state.current_section = 'A'
     st.success("🔄 New interview started!")
     st.rerun()
-
-def interactive_compliance_dashboard():
-    """Interactive compliance dashboard"""
-    st.header("📊 Compliance Analysis Dashboard")
-    
-    if not st.session_state.procedures_list:
-        st.info("Add procedures in Section B to see analysis")
-        return
-    
-    # Create analysis dataframe
-    analysis_data = []
-    for procedure in st.session_state.procedures_list:
-        analysis_data.append({
-            'Procedure': procedure['procedure'],
-            'Authority': procedure['authority'],
-            'Application Mode': procedure['application_mode'],
-            'Complexity': procedure['complexity'],
-            'Total Cost': procedure['official_fees'] + procedure.get('unofficial_payments', 0),
-            'Total Time': procedure['total_days'],
-            'Official Fees': procedure['official_fees'],
-            'Unofficial Payments': procedure.get('unofficial_payments', 0),
-            'Risk Score': calculate_risk_score(procedure)
-        })
-    
-    df = pd.DataFrame(analysis_data)
-    
-    # Summary metrics
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total Procedures", len(df))
-    with col2:
-        st.metric("Total Cost", f"ZMW {df['Total Cost'].sum():,.0f}")
-    with col3:
-        st.metric("Total Time", f"{df['Total Time'].sum()} days")
-    with col4:
-        st.metric("Avg Risk", f"{df['Risk Score'].mean():.1f}/10")
-    
-    # Visualizations
-    tab1, tab2, tab3, tab4 = st.tabs(["Cost Analysis", "Time Analysis", "Application Modes", "Risk Matrix"])
-    
-    with tab1:
-        fig_cost = px.bar(df, x='Procedure', y=['Official Fees', 'Unofficial Payments'], 
-                         title="Cost Breakdown by Procedure", barmode='stack')
-        st.plotly_chart(fig_cost, use_container_width=True)
-    
-    with tab2:
-        fig_time = px.bar(df, x='Procedure', y='Total Time', 
-                         title="Processing Time by Procedure", color='Complexity')
-        st.plotly_chart(fig_time, use_container_width=True)
-    
-    with tab3:
-        # Application mode analysis
-        mode_counts = df['Application Mode'].value_counts()
-        fig_mode = px.pie(values=mode_counts.values, names=mode_counts.index, 
-                         title="Distribution of Application Modes")
-        st.plotly_chart(fig_mode, use_container_width=True)
-    
-    with tab4:
-        fig_risk = px.scatter(df, x='Total Cost', y='Total Time', size='Risk Score',
-                             color='Application Mode', hover_name='Procedure',
-                             title="Compliance Risk Matrix")
-        st.plotly_chart(fig_risk, use_container_width=True)
-
-def calculate_risk_score(procedure):
-    """Calculate risk score for a procedure"""
-    complexity_risk = procedure['complexity'] * 2
-    cost_risk = min(procedure['official_fees'] / 5000, 10) if procedure['official_fees'] > 0 else 1
-    time_risk = min(procedure['total_days'] / 30, 10) if procedure['total_days'] > 0 else 1
-    unofficial_risk = min(procedure.get('unofficial_payments', 0) / 1000, 5) if procedure.get('unofficial_payments', 0) > 0 else 0
-    
-    return (complexity_risk + cost_risk + time_risk + unofficial_risk) / 4
 
 # Initialize and run the application
 if __name__ == "__main__":
