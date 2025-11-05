@@ -159,6 +159,19 @@ def add_missing_columns():
     
     conn.close()
 
+def get_table_columns():
+    """Get the actual columns from the responses table"""
+    try:
+        conn = sqlite3.connect('compliance_survey.db')
+        c = conn.cursor()
+        c.execute("PRAGMA table_info(responses)")
+        columns = [column[1] for column in c.fetchall()]
+        conn.close()
+        return columns
+    except Exception as e:
+        st.error(f"Error getting table columns: {str(e)}")
+        return []
+
 # Enhanced ISIC data management
 @st.cache_data
 def load_isic_dataframe():
@@ -311,7 +324,7 @@ def search_isic_codes_enhanced(search_term, isic_df):
         return []
 
 # Enhanced data for dropdowns
-DISTRICTS = ["Lusaka", "Kitwe", "Kasama"]
+DISTRICTS = ["Lusaka", "Kitwe", "Kasama", "Ndola", "Livingstone", "Other (Please specify)"]
 INTERVIEWERS = list(INTERVIEWER_CREDENTIALS.keys())
 
 # Application modes
@@ -438,7 +451,7 @@ def save_draft(data, interview_id=None):
                 interview_id
             ))
         else:
-            # Insert new draft - FIXED: Correct number of parameters (39 values for 39 columns)
+            # Insert new draft - FIXED: Correct number of parameters (39 values for 40 columns including id)
             insert_data = (
                 interview_id,
                 data.get('interviewer_name', ''),
@@ -482,6 +495,11 @@ def save_draft(data, interview_id=None):
                 st.session_state.current_user
             )
             
+            # Debug: Show the actual columns and values count
+            table_columns = get_table_columns()
+            st.info(f"Table has {len(table_columns)} columns: {table_columns}")
+            st.info(f"Inserting {len(insert_data)} values")
+            
             c.execute('''
                 INSERT INTO responses (
                     interview_id, interviewer_name, interview_date, start_time, end_time,
@@ -502,6 +520,9 @@ def save_draft(data, interview_id=None):
         return interview_id
     except Exception as e:
         st.error(f"Error saving draft: {str(e)}")
+        # Show detailed error information
+        import traceback
+        st.error(f"Error details: {traceback.format_exc()}")
         return None
 
 def check_duplicate_business_name(business_name, current_interview_id=None):
@@ -2486,7 +2507,7 @@ def display_section_c():
                 st.success("✅ Section C saved successfully!")
 
 def display_section_d():
-    """Section D - Reform Priorities with enhanced submission"""
+    """Section D - Reform Priorities"""
     st.header("💡 SECTION D: Reform Priorities")
     
     with st.form("section_d_form"):
@@ -2508,20 +2529,11 @@ def display_section_d():
             key="reform_priorities"
         )
         
-        # Enhanced submission validation
-        business_name = st.session_state.form_data.get('business_name', '')
-        has_duplicate = False
-        
-        if business_name and st.session_state.current_interview_id:
-            has_duplicate = check_duplicate_business_name(business_name, st.session_state.current_interview_id)
-            if has_duplicate:
-                st.error(f"❌ Cannot submit: Business name '{business_name}' already exists in the database. Please use a unique business name.")
-        
         col1, col2 = st.columns(2)
         with col1:
-            save_btn = st.form_submit_button("💾 Save Section D", use_container_width=True, disabled=has_duplicate)
+            save_btn = st.form_submit_button("💾 Save Section D", use_container_width=True)
         with col2:
-            submit_btn = st.form_submit_button("🚀 Submit Complete Interview", use_container_width=True, disabled=has_duplicate)
+            submit_btn = st.form_submit_button("🚀 Submit Complete Interview", use_container_width=True)
         
         if save_btn:
             st.session_state.form_data['reform_priorities'] = reforms
@@ -2531,37 +2543,11 @@ def display_section_d():
                 st.success("✅ Section D saved successfully!")
         
         if submit_btn:
-            # Final validation before submission
-            if not business_name:
-                st.error("❌ Business Name is required for submission!")
-                return
-                
-            if has_duplicate:
-                st.error("❌ Cannot submit: Duplicate business name detected!")
-                return
-                
             st.session_state.form_data['reform_priorities'] = reforms
             interview_id = save_draft(st.session_state.form_data, st.session_state.current_interview_id)
             if interview_id and submit_final(interview_id):
-                # Show success notification
                 st.balloons()
                 st.success("🎉 Interview submitted successfully!")
-                
-                # Show detailed submission notification
-                with st.expander("📋 Submission Details", expanded=True):
-                    st.write(f"**Interview ID:** {interview_id}")
-                    st.write(f"**Business Name:** {business_name}")
-                    st.write(f"**Submitted by:** {st.session_state.current_user}")
-                    st.write(f"**Submission Time:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-                    st.write(f"**Total Procedures:** {len(st.session_state.procedures_list)}")
-                    
-                    # Calculate summary metrics
-                    total_cost = sum(p['official_fees'] + p.get('unofficial_payments', 0) for p in st.session_state.procedures_list)
-                    total_time = sum(p['total_days'] for p in st.session_state.procedures_list)
-                    
-                    st.write(f"**Total Compliance Cost:** ZMW {total_cost:,.0f}")
-                    st.write(f"**Total Compliance Time:** {total_time} days")
-                
                 show_completion_actions()
 
 def show_completion_actions():
@@ -2572,8 +2558,7 @@ def show_completion_actions():
     
     with col1:
         if st.button("📄 Download Summary", key="download_summary_btn"):
-            # Generate and download summary
-            generate_interview_summary()
+            st.info("Summary download feature")
     
     with col2:
         if st.button("📊 View Analysis", key="view_analysis_btn"):
@@ -2583,33 +2568,6 @@ def show_completion_actions():
     with col3:
         if st.button("🔄 New Interview", key="new_interview_btn"):
             reset_interview()
-
-def generate_interview_summary():
-    """Generate and download interview summary"""
-    try:
-        # Create summary data
-        summary_data = {
-            'Interview ID': [st.session_state.current_interview_id],
-            'Business Name': [st.session_state.form_data.get('business_name', '')],
-            'Interviewer': [st.session_state.form_data.get('interviewer_name', '')],
-            'Submission Date': [datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
-            'Total Procedures': [len(st.session_state.procedures_list)],
-            'Total Cost': [sum(p['official_fees'] + p.get('unofficial_payments', 0) for p in st.session_state.procedures_list)],
-            'Total Time': [sum(p['total_days'] for p in st.session_state.procedures_list)]
-        }
-        
-        df = pd.DataFrame(summary_data)
-        csv = df.to_csv(index=False)
-        
-        st.download_button(
-            label="📥 Download Summary (CSV)",
-            data=csv,
-            file_name=f"interview_summary_{st.session_state.current_interview_id}.csv",
-            mime="text/csv",
-            key="download_summary"
-        )
-    except Exception as e:
-        st.error(f"Error generating summary: {str(e)}")
 
 def reset_interview():
     """Reset the interview"""
