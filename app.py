@@ -394,7 +394,7 @@ def save_draft(data, interview_id=None):
         current_time = datetime.now().isoformat()
         
         if existing:
-            # Update existing draft - FIXED: Correct number of parameters
+            # Update existing draft
             c.execute('''
                 UPDATE responses SET
                     interviewer_name=?, interview_date=?, start_time=?, end_time=?,
@@ -451,7 +451,7 @@ def save_draft(data, interview_id=None):
                 interview_id
             ))
         else:
-            # Insert new draft - FIXED: Correct number of parameters (39 values for 40 columns including id)
+            # Insert new draft - CORRECTED: Now providing values for all 40 columns
             insert_data = (
                 interview_id,
                 data.get('interviewer_name', ''),
@@ -495,14 +495,15 @@ def save_draft(data, interview_id=None):
                 st.session_state.current_user
             )
             
-            # Debug: Show the actual columns and values count
+            # Debug information
             table_columns = get_table_columns()
             st.info(f"Table has {len(table_columns)} columns: {table_columns}")
             st.info(f"Inserting {len(insert_data)} values")
             
+            # CORRECTED INSERT STATEMENT - Now includes all 40 columns including 'id'
             c.execute('''
                 INSERT INTO responses (
-                    interview_id, interviewer_name, interview_date, start_time, end_time,
+                    id, interview_id, interviewer_name, interview_date, start_time, end_time,
                     business_name, district, physical_address, contact_person, email, phone,
                     primary_sector, legal_status, business_size, ownership_structure, gender_owner,
                     business_activities, isic_codes, year_established, turnover_range,
@@ -512,7 +513,7 @@ def save_draft(data, interview_id=None):
                     cost_comparison_national, cost_comparison_local, business_climate_rating,
                     reform_priorities, status, submission_date, last_modified,
                     total_compliance_cost, total_compliance_time, risk_score, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', insert_data)
         
         conn.commit()
