@@ -1804,9 +1804,11 @@ def logout():
     st.success("Logged out successfully!")
     st.rerun()
 
+
 # Enhanced Main Application
 def main():
     initialize_session_state()
+    diagnose_table_structure()
     
     # Load ISIC data if not loaded
     if st.session_state.isic_df is None:
