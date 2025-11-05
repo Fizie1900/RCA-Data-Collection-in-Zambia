@@ -364,8 +364,8 @@ def initialize_session_state():
             st.session_state[key] = value
 
 # Database functions - FIXED: Correct number of columns
-def save_draft(data, interview_id=None):
-    """Save form data as draft with enhanced calculations"""
+def save_draft_dynamic(data, interview_id=None):
+    """Dynamic save draft that adapts to table structure"""
     try:
         conn = sqlite3.connect('compliance_survey.db')
         c = conn.cursor()
@@ -373,28 +373,24 @@ def save_draft(data, interview_id=None):
         if not interview_id:
             interview_id = generate_interview_id()
         
-        # Calculate total compliance metrics
+        # Calculate metrics
         procedure_data = data.get('procedure_data', [])
         total_cost = sum(proc.get('official_fees', 0) + proc.get('unofficial_payments', 0) for proc in procedure_data)
         total_time = sum(proc.get('total_days', 0) for proc in procedure_data)
-        
-        # Calculate risk score (simplified)
-        risk_score = min((total_cost / 100000 + total_time / 365) * 10, 10)  # Scale to 0-10
+        risk_score = min((total_cost / 100000 + total_time / 365) * 10, 10)
         
         # Check if record exists
         c.execute("SELECT id FROM responses WHERE interview_id = ?", (interview_id,))
         existing = c.fetchone()
         
-        # Prepare data for insertion
+        # Prepare data
         isic_codes = data.get('isic_codes', [])
         reform_priorities = data.get('reform_priorities', [])
         procedure_data_json = json.dumps(procedure_data)
-        
-        # Use string conversion for datetime to avoid deprecation warning
         current_time = datetime.now().isoformat()
         
         if existing:
-            # Update existing draft
+            # Update existing (same as before)
             c.execute('''
                 UPDATE responses SET
                     interviewer_name=?, interview_date=?, start_time=?, end_time=?,
@@ -451,81 +447,83 @@ def save_draft(data, interview_id=None):
                 interview_id
             ))
         else:
-            # Insert new draft - CORRECTED: Now providing values for all 40 columns
-            insert_data = (
-                interview_id,
-                data.get('interviewer_name', ''),
-                data.get('interview_date', ''),
-                data.get('start_time', ''),
-                data.get('end_time', ''),
-                data.get('business_name', ''),
-                data.get('district', ''),
-                data.get('physical_address', ''),
-                data.get('contact_person', ''),
-                data.get('email', ''),
-                data.get('phone', ''),
-                data.get('primary_sector', ''),
-                data.get('legal_status', ''),
-                data.get('business_size', ''),
-                data.get('ownership_structure', ''),
-                data.get('gender_owner', ''),
-                data.get('business_activities', ''),
-                json.dumps(isic_codes),
-                data.get('year_established', 0),
-                data.get('turnover_range', ''),
-                data.get('employees_fulltime', 0),
-                data.get('employees_parttime', 0),
-                procedure_data_json,
-                data.get('completion_time_local', 0.0),
-                data.get('completion_time_national', 0.0),
-                data.get('completion_time_dk', 0.0),
-                data.get('compliance_cost_percentage', 0.0),
-                data.get('permit_comparison_national', 0),
-                data.get('permit_comparison_local', 0),
-                data.get('cost_comparison_national', 0),
-                data.get('cost_comparison_local', 0),
-                data.get('business_climate_rating', 0),
-                json.dumps(reform_priorities),
-                'draft',
-                current_time,
-                current_time,
-                total_cost,
-                total_time,
-                risk_score,
-                st.session_state.current_user
-            )
+            # Get table structure to build dynamic INSERT
+            c.execute("PRAGMA table_info(responses)")
+            columns_info = c.fetchall()
+            column_names = [col[1] for col in columns_info]
             
-            # Debug information
-            table_columns = get_table_columns()
-            st.info(f"Table has {len(table_columns)} columns: {table_columns}")
-            st.info(f"Inserting {len(insert_data)} values")
+            st.info(f"Table columns: {column_names}")
+            st.info(f"Number of columns: {len(column_names)}")
             
-            # CORRECTED INSERT STATEMENT - Now includes all 40 columns including 'id'
-            c.execute('''
-                INSERT INTO responses (
-                    id, interview_id, interviewer_name, interview_date, start_time, end_time,
-                    business_name, district, physical_address, contact_person, email, phone,
-                    primary_sector, legal_status, business_size, ownership_structure, gender_owner,
-                    business_activities, isic_codes, year_established, turnover_range,
-                    employees_fulltime, employees_parttime, procedure_data,
-                    completion_time_local, completion_time_national, completion_time_dk,
-                    compliance_cost_percentage, permit_comparison_national, permit_comparison_local,
-                    cost_comparison_national, cost_comparison_local, business_climate_rating,
-                    reform_priorities, status, submission_date, last_modified,
-                    total_compliance_cost, total_compliance_time, risk_score, created_by
-                ) VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', insert_data)
+            # Build the insert dynamically
+            placeholders = ', '.join(['?' for _ in range(len(column_names))])
+            column_list = ', '.join(column_names)
+            
+            # Prepare values in the correct order
+            values_map = {
+                'interview_id': interview_id,
+                'interviewer_name': data.get('interviewer_name', ''),
+                'interview_date': data.get('interview_date', ''),
+                'start_time': data.get('start_time', ''),
+                'end_time': data.get('end_time', ''),
+                'business_name': data.get('business_name', ''),
+                'district': data.get('district', ''),
+                'physical_address': data.get('physical_address', ''),
+                'contact_person': data.get('contact_person', ''),
+                'email': data.get('email', ''),
+                'phone': data.get('phone', ''),
+                'primary_sector': data.get('primary_sector', ''),
+                'legal_status': data.get('legal_status', ''),
+                'business_size': data.get('business_size', ''),
+                'ownership_structure': data.get('ownership_structure', ''),
+                'gender_owner': data.get('gender_owner', ''),
+                'business_activities': data.get('business_activities', ''),
+                'isic_codes': json.dumps(isic_codes),
+                'year_established': data.get('year_established', 0),
+                'turnover_range': data.get('turnover_range', ''),
+                'employees_fulltime': data.get('employees_fulltime', 0),
+                'employees_parttime': data.get('employees_parttime', 0),
+                'procedure_data': procedure_data_json,
+                'completion_time_local': data.get('completion_time_local', 0.0),
+                'completion_time_national': data.get('completion_time_national', 0.0),
+                'completion_time_dk': data.get('completion_time_dk', 0.0),
+                'compliance_cost_percentage': data.get('compliance_cost_percentage', 0.0),
+                'permit_comparison_national': data.get('permit_comparison_national', 0),
+                'permit_comparison_local': data.get('permit_comparison_local', 0),
+                'cost_comparison_national': data.get('cost_comparison_national', 0),
+                'cost_comparison_local': data.get('cost_comparison_local', 0),
+                'business_climate_rating': data.get('business_climate_rating', 0),
+                'reform_priorities': json.dumps(reform_priorities),
+                'status': 'draft',
+                'submission_date': current_time,
+                'last_modified': current_time,
+                'total_compliance_cost': total_cost,
+                'total_compliance_time': total_time,
+                'risk_score': risk_score,
+                'created_by': st.session_state.current_user
+            }
+            
+            # For id column, use NULL if it exists
+            if 'id' in column_names:
+                values_map['id'] = None
+            
+            # Build values in correct order
+            values = [values_map.get(col, None) for col in column_names]
+            
+            st.info(f"Inserting {len(values)} values for {len(column_names)} columns")
+            
+            # Execute dynamic insert
+            query = f"INSERT INTO responses ({column_list}) VALUES ({placeholders})"
+            c.execute(query, values)
         
         conn.commit()
         conn.close()
         return interview_id
     except Exception as e:
         st.error(f"Error saving draft: {str(e)}")
-        # Show detailed error information
         import traceback
         st.error(f"Error details: {traceback.format_exc()}")
         return None
-
 def check_duplicate_business_name(business_name, current_interview_id=None):
     """Check if business name already exists in database"""
     try:
