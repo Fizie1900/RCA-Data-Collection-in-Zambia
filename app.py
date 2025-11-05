@@ -1823,12 +1823,12 @@ def logout():
 # Enhanced Main Application
 def main():
     initialize_session_state()
-    diagnose_table_structure()
+    
     
     # Load ISIC data if not loaded
     if st.session_state.isic_df is None:
         st.session_state.isic_df = load_isic_dataframe()
-    
+    diagnose_table_structure()
     # Route based on login status
     if not st.session_state.interviewer_logged_in and not st.session_state.admin_logged_in:
         login_system()
