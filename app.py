@@ -363,7 +363,7 @@ def init_db():
     conn = sqlite3.connect('compliance_survey.db')
     c = conn.cursor()
     
-    # Main responses table
+    # Main responses table - FIXED: 43 columns total
     c.execute('''
         CREATE TABLE IF NOT EXISTS responses (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -470,33 +470,27 @@ def add_missing_columns():
         c.execute("PRAGMA table_info(responses)")
         columns = [column[1] for column in c.fetchall()]
         
+        missing_columns = []
+        
         if 'created_by' not in columns:
+            missing_columns.append('created_by')
+        if 'current_section' not in columns:
+            missing_columns.append('current_section')
+        if 'draft_progress' not in columns:
+            missing_columns.append('draft_progress')
+        
+        if missing_columns:
             st.info("🔄 Updating database schema...")
-            c.execute("ALTER TABLE responses ADD COLUMN created_by TEXT")
+            for column in missing_columns:
+                if column == 'created_by':
+                    c.execute("ALTER TABLE responses ADD COLUMN created_by TEXT")
+                elif column == 'current_section':
+                    c.execute("ALTER TABLE responses ADD COLUMN current_section TEXT DEFAULT 'A'")
+                elif column == 'draft_progress':
+                    c.execute("ALTER TABLE responses ADD COLUMN draft_progress REAL DEFAULT 0")
+            
             conn.commit()
             st.success("✅ Database schema updated successfully!")
-            
-    except Exception as e:
-        st.warning(f"Database schema update: {str(e)}")
-    
-    conn.close()
-
-def add_draft_manager_columns():
-    """Add missing columns for draft manager to existing database tables"""
-    conn = sqlite3.connect('compliance_survey.db')
-    c = conn.cursor()
-    
-    try:
-        # Check if current_section column exists
-        c.execute("PRAGMA table_info(responses)")
-        columns = [column[1] for column in c.fetchall()]
-        
-        if 'current_section' not in columns:
-            st.info("🔄 Adding draft manager columns...")
-            c.execute("ALTER TABLE responses ADD COLUMN current_section TEXT DEFAULT 'A'")
-            c.execute("ALTER TABLE responses ADD COLUMN draft_progress REAL DEFAULT 0")
-            conn.commit()
-            st.success("✅ Draft manager columns added successfully!")
             
     except Exception as e:
         st.warning(f"Database schema update: {str(e)}")
@@ -729,7 +723,7 @@ def save_draft(data, interview_id=None):
         current_time = datetime.now().isoformat()
         
         if existing:
-            # Update existing draft
+            # Update existing draft - FIXED: All 43 columns
             c.execute('''
                 UPDATE responses SET
                     interviewer_name=?, interview_date=?, start_time=?, end_time=?,
@@ -789,7 +783,7 @@ def save_draft(data, interview_id=None):
                 interview_id
             ))
         else:
-            # Insert new draft - FIXED: Using NULL for auto-increment id
+            # Insert new draft - FIXED: 43 values for 43 columns
             insert_data = (
                 interview_id,
                 data.get('interviewer_name', ''),
@@ -835,10 +829,10 @@ def save_draft(data, interview_id=None):
                 progress
             )
             
-            # FIXED INSERT STATEMENT - includes NULL for auto-increment id
+            # FIXED INSERT STATEMENT - 43 values for 43 columns
             c.execute('''
                 INSERT INTO responses VALUES (
-                    NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
             ''', insert_data)
         
@@ -1144,7 +1138,7 @@ def business_activities_section():
             )
         
         if search_results:
-            st.write(f"**📋 Found {len(search_results)} matching ISIC codes:**")
+            st.write(f"📋 Found {len(search_results)} matching ISIC codes:")
             
             # Display results in a compact format
             for i, result in enumerate(search_results):
@@ -2185,7 +2179,6 @@ def main():
     
     # Run database migrations
     add_missing_columns()
-    add_draft_manager_columns()
     
     # Route based on login status
     if not st.session_state.interviewer_logged_in and not st.session_state.admin_logged_in:
@@ -2208,29 +2201,29 @@ def admin_navigation():
     
     # Enhanced admin menu with editor
     menu_options = {
-        "Dashboard": "📊",
-        "Data Management": "💾", 
-        "Edit Interviews": "✏️",
-        "Analytics": "📈",
-        "User Management": "👥",
-        "System Tools": "🛠️"
+        'Dashboard': '📊',
+        'Data Management': '💾', 
+        'Edit_Interviews': '✏️',
+        'Analytics': '📈',
+        'User Management': '👥',
+        'System Tools': '🛠️'
     }
     
     selected_menu = st.sidebar.radio("Menu", list(menu_options.keys()), 
-                                   format_func=lambda x: f"{menu_options[x]} {x}",
+                                   format_func=lambda x: f"{menu_options[x]} {x.replace('_', ' ')}",
                                    key="admin_menu")
     
-    if selected_menu == "Dashboard":
+    if selected_menu == 'Dashboard':
         admin_dashboard()
-    elif selected_menu == "Data Management":
+    elif selected_menu == 'Data Management':
         display_all_interviews()
-    elif selected_menu == "Edit Interviews":  # NEW OPTION
+    elif selected_menu == 'Edit_Interviews':  # NEW OPTION
         interview_editor_main()
-    elif selected_menu == "Analytics":
+    elif selected_menu == 'Analytics':
         analytics_main()
-    elif selected_menu == "User Management":
+    elif selected_menu == 'User Management':
         user_management_section()
-    elif selected_menu == "System Tools":
+    elif selected_menu == 'System Tools':
         database_tools_section()
 
 def admin_dashboard():
@@ -2898,8 +2891,8 @@ def display_section_c():
                 st.success("✅ Section C saved successfully!")
 
 def display_section_d():
-    """Section D - Reform Priorities"""
-    st.header("💡 SECTION D: Reform Priorities")
+    """Section D - Reform Priorities - IMPROVED VERSION"""
+    st.header("💡 SECTION D: Reform Priorities & Recommendations")
     
     with st.form("section_d_form"):
         st.subheader("Reform Recommendations")
@@ -2909,16 +2902,116 @@ def display_section_d():
         to reduce the compliance burden, what would they be?*
         """)
         
-        # Interactive reform input
-        reforms = st_tags(
-            label='Enter reform priorities (press Enter after each):',
-            text='Add up to 5 reform priorities',
-            value=st.session_state.form_data.get('reform_priorities', []),
-            suggestions=['Simplify procedures', 'Reduce processing time', 'Lower fees', 
-                        'Increase transparency', 'Enhance online services'],
+        # Improved reform priorities with better suggestions
+        st.write("**🎯 Top Reform Priorities**")
+        
+        # Categorized reform options
+        reform_categories = {
+            "📋 Process Simplification": [
+                "Simplify application procedures",
+                "Reduce number of required documents",
+                "Standardize forms across agencies",
+                "Create single-window clearance system"
+            ],
+            "⏱️ Time Reduction": [
+                "Set maximum processing time limits",
+                "Implement online tracking systems",
+                "Reduce bureaucratic delays",
+                "Expedite renewal processes"
+            ],
+            "💰 Cost Reduction": [
+                "Lower official fees for small businesses",
+                "Eliminate redundant charges",
+                "Provide fee waivers for startups",
+                "Transparent fee structure"
+            ],
+            "🌐 Digital Transformation": [
+                "Full online application system",
+                "Digital document submission",
+                "Online payment options",
+                "Mobile-friendly services"
+            ],
+            "🔍 Transparency & Accountability": [
+                "Publish clear requirements online",
+                "Provide status updates automatically",
+                "Establish complaint mechanisms",
+                "Publish service standards"
+            ],
+            "🏢 Institutional Reforms": [
+                "Better inter-agency coordination",
+                "Training for regulatory staff",
+                "One-stop service centers",
+                "Regular stakeholder consultations"
+            ]
+        }
+        
+        selected_reforms = []
+        
+        # Display reform options by category
+        for category, reforms in reform_categories.items():
+            with st.expander(f"{category}", expanded=True):
+                for reform in reforms:
+                    if st.checkbox(reform, key=f"reform_{reform}"):
+                        selected_reforms.append(reform)
+        
+        # Additional custom reforms
+        st.subheader("💡 Additional Custom Recommendations")
+        custom_reforms = st_tags(
+            label='Enter additional reform priorities (press Enter after each):',
+            text='Add your own specific recommendations',
+            value=[],
+            suggestions=['Harmonize local and national requirements', 
+                        'Provide pre-application advisory services',
+                        'Simplify tax compliance procedures',
+                        'Streamline environmental clearances'],
             maxtags=5,
-            key="reform_priorities"
+            key="custom_reform_priorities"
         )
+        
+        # Combine selected and custom reforms
+        all_reforms = selected_reforms + custom_reforms
+        
+        # Priority ranking for top 3 reforms
+        if len(all_reforms) > 0:
+            st.subheader("🎖️ Priority Ranking")
+            st.write("Select your top 3 most important reforms:")
+            
+            if len(all_reforms) >= 1:
+                priority_1 = st.selectbox("1st Priority", [""] + all_reforms, key="priority_1")
+            if len(all_reforms) >= 2:
+                priority_2 = st.selectbox("2nd Priority", [""] + [r for r in all_reforms if r != priority_1], key="priority_2")
+            if len(all_reforms) >= 3:
+                priority_3 = st.selectbox("3rd Priority", [""] + [r for r in all_reforms if r not in [priority_1, priority_2]], key="priority_3")
+            
+            # Store prioritized reforms
+            prioritized_reforms = [p for p in [priority_1, priority_2, priority_3] if p]
+            other_reforms = [r for r in all_reforms if r not in prioritized_reforms]
+            final_reforms = prioritized_reforms + other_reforms
+        
+        else:
+            final_reforms = []
+        
+        # Impact assessment
+        st.subheader("📊 Expected Impact")
+        if final_reforms:
+            st.write("**Potential benefits of implementing these reforms:**")
+            
+            impact_col1, impact_col2, impact_col3 = st.columns(3)
+            
+            with impact_col1:
+                time_reduction = st.slider("Time Reduction (%)", 0, 100, 30, 
+                                         help="Expected reduction in compliance time")
+                st.metric("Time Saved", f"{time_reduction}%")
+            
+            with impact_col2:
+                cost_reduction = st.slider("Cost Reduction (%)", 0, 100, 25,
+                                         help="Expected reduction in compliance costs")
+                st.metric("Cost Saved", f"{cost_reduction}%")
+            
+            with impact_col3:
+                complexity_reduction = st.slider("Complexity Reduction", 1, 5, 3,
+                                               help="1=Minor improvement, 5=Major simplification")
+                st.metric("Simplicity Gain", f"{complexity_reduction}/5")
         
         col1, col2 = st.columns(2)
         with col1:
@@ -2927,14 +3020,14 @@ def display_section_d():
             submit_btn = st.form_submit_button("🚀 Submit Complete Interview", use_container_width=True)
         
         if save_btn:
-            st.session_state.form_data['reform_priorities'] = reforms
+            st.session_state.form_data['reform_priorities'] = final_reforms
             interview_id = save_draft(st.session_state.form_data, st.session_state.current_interview_id)
             if interview_id:
                 st.session_state.current_interview_id = interview_id
                 st.success("✅ Section D saved successfully!")
         
         if submit_btn:
-            st.session_state.form_data['reform_priorities'] = reforms
+            st.session_state.form_data['reform_priorities'] = final_reforms
             interview_id = save_draft(st.session_state.form_data, st.session_state.current_interview_id)
             if interview_id and submit_final(interview_id):
                 st.balloons()
