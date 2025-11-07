@@ -12,8 +12,24 @@ import io
 import base64
 import hashlib
 
-from interview_editor import interview_editor_main, InterviewEditor
-from analytics_dashboard import analytics_main, create_interactive_dashboard
+# Import other modules (make sure these files exist)
+try:
+    from interview_editor import interview_editor_main, InterviewEditor
+except ImportError:
+    def interview_editor_main():
+        st.info("Interview Editor module not available")
+    
+    class InterviewEditor:
+        pass
+
+try:
+    from analytics_dashboard import analytics_main, create_interactive_dashboard
+except ImportError:
+    def analytics_main():
+        st.info("Analytics Dashboard module not available")
+    
+    def create_interactive_dashboard():
+        st.info("Interactive Dashboard not available")
 
 # SQLite Cloud configuration
 SQLITECLOUD_CONFIG = {
@@ -46,10 +62,10 @@ def execute_query(query, params=None, return_result=False):
             if query.strip().upper().startswith('SELECT'):
                 result = cursor.fetchall()
                 columns = [desc[0] for desc in cursor.description] if cursor.description else []
-                return result, columns
+                return (result, columns)  # Always return tuple when return_result=True
             else:
                 conn.commit()
-                return cursor.rowcount
+                return cursor.rowcount  # Return just the row count for non-SELECT queries
         else:
             conn.commit()
             return True
@@ -77,6 +93,366 @@ def execute_many(query, params_list):
     finally:
         conn.close()
 
+# Set page config MUST be first
+st.set_page_config(
+    page_title="Zambia Regulatory Compliance Survey",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# Enhanced credentials with individual interviewer passwords
+INTERVIEWER_CREDENTIALS = {
+    "Fizie Fulumaka": {"password": "fizie2024", "role": "interviewer"},
+    "Sanderson Mweemba": {"password": "sanderson2024", "role": "interviewer"},
+    "Anastazia Mtonga": {"password": "anastazia2024", "role": "interviewer"},
+    "Sarah Namutowe": {"password": "sarah2024", "role": "interviewer"},
+    "Boris Divjak": {"password": "boris2024", "role": "interviewer"},
+    "Other": {"password": "other2024", "role": "interviewer"}
+}
+
+ADMIN_CREDENTIALS = {
+    "admin": {"password": "compliance2024", "role": "admin"},
+    "researcher": {"password": "data2024", "role": "researcher"}
+}
+
+# Initialize database with enhanced schema
+def init_db():
+    """Initialize database tables in SQLite Cloud"""
+    conn = get_connection()
+    if conn is None:
+        return
+    
+    try:
+        c = conn.cursor()
+        
+        # Main responses table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS responses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                interview_id TEXT UNIQUE,
+                interviewer_name TEXT,
+                interview_date TEXT,
+                start_time TEXT,
+                end_time TEXT,
+                business_name TEXT,
+                district TEXT,
+                physical_address TEXT,
+                contact_person TEXT,
+                email TEXT,
+                phone TEXT,
+                primary_sector TEXT,
+                legal_status TEXT,
+                business_size TEXT,
+                ownership_structure TEXT,
+                gender_owner TEXT,
+                business_activities TEXT,
+                isic_codes TEXT,
+                year_established INTEGER,
+                turnover_range TEXT,
+                employees_fulltime INTEGER,
+                employees_parttime INTEGER,
+                procedure_data TEXT,
+                completion_time_local REAL,
+                completion_time_national REAL,
+                completion_time_dk REAL,
+                compliance_cost_percentage REAL,
+                permit_comparison_national INTEGER,
+                permit_comparison_local INTEGER,
+                cost_comparison_national INTEGER,
+                cost_comparison_local INTEGER,
+                business_climate_rating INTEGER,
+                reform_priorities TEXT,
+                status TEXT DEFAULT 'draft',
+                submission_date TIMESTAMP,
+                last_modified TIMESTAMP,
+                total_compliance_cost REAL DEFAULT 0,
+                total_compliance_time INTEGER DEFAULT 0,
+                risk_score REAL DEFAULT 0,
+                created_by TEXT,
+                current_section TEXT DEFAULT 'A',
+                draft_progress REAL DEFAULT 0
+            )
+        ''')
+        
+        # ISIC codes cache table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS isic_cache (
+                code TEXT PRIMARY KEY,
+                title TEXT,
+                description TEXT,
+                category TEXT,
+                last_updated TIMESTAMP
+            )
+        ''')
+        
+        # Templates table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE,
+                sector TEXT,
+                business_size TEXT,
+                data TEXT,
+                created_date TIMESTAMP
+            )
+        ''')
+        
+        # Admin logs table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS admin_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT,
+                action TEXT,
+                timestamp TIMESTAMP,
+                details TEXT
+            )
+        ''')
+        
+        # User sessions table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT,
+                login_time TIMESTAMP,
+                logout_time TIMESTAMP,
+                session_duration INTEGER
+            )
+        ''')
+        
+        conn.commit()
+        st.success("✅ Database tables initialized successfully!")
+        
+    except Exception as e:
+        st.error(f"❌ Database initialization error: {str(e)}")
+    finally:
+        conn.close()
+
+def add_missing_columns():
+    """Add missing columns to existing database tables"""
+    try:
+        # Check if created_by column exists in responses table
+        result = execute_query("PRAGMA table_info(responses)", return_result=True)
+        if result and isinstance(result, tuple) and result[0]:
+            columns = [column[1] for column in result[0]]
+            
+            missing_columns = []
+            
+            if 'created_by' not in columns:
+                missing_columns.append('created_by')
+            if 'current_section' not in columns:
+                missing_columns.append('current_section')
+            if 'draft_progress' not in columns:
+                missing_columns.append('draft_progress')
+            
+            if missing_columns:
+                st.info("🔄 Updating database schema...")
+                for column in missing_columns:
+                    if column == 'created_by':
+                        execute_query("ALTER TABLE responses ADD COLUMN created_by TEXT")
+                    elif column == 'current_section':
+                        execute_query("ALTER TABLE responses ADD COLUMN current_section TEXT DEFAULT 'A'")
+                    elif column == 'draft_progress':
+                        execute_query("ALTER TABLE responses ADD COLUMN draft_progress REAL DEFAULT 0")
+                
+                st.success("✅ Database schema updated successfully!")
+                
+    except Exception as e:
+        st.warning(f"Database schema update: {str(e)}")
+
+# Enhanced ISIC data management
+@st.cache_data
+def load_isic_dataframe():
+    """Load ISIC data from Excel file and return as DataFrame"""
+    excel_files = [
+        "Complete_ISIC5_Structure_16Dec2022final.xlsx",
+        "ISIC_Codes.xlsx", 
+        "isic_codes.xlsx",
+        "Complete_ISIC5.xlsx",
+        "ISIC_4.xlsx",
+        "isic_data.xlsx"
+    ]
+    
+    for filename in excel_files:
+        if os.path.exists(filename):
+            try:
+                df = pd.read_excel(filename)
+                st.success(f"✅ ISIC database loaded from: {filename}")
+                
+                # Cache the data
+                cache_isic_data(df)
+                return df
+            except Exception as e:
+                st.warning(f"Could not load {filename}: {str(e)}")
+                continue
+    
+    # If no file found, try to load from cache
+    return load_isic_from_cache()
+
+def cache_isic_data(df):
+    """Cache ISIC data in database for faster access"""
+    try:
+        # Clear existing cache
+        execute_query("DELETE FROM isic_cache")
+        
+        # Insert new data
+        params_list = []
+        for _, row in df.iterrows():
+            code_col = next((col for col in ['Code', 'CODE', 'code'] if col in df.columns), None)
+            title_col = next((col for col in ['Title', 'TITLE', 'title'] if col in df.columns), None)
+            
+            if code_col and title_col:
+                code = str(row[code_col]) if pd.notna(row[code_col]) else None
+                title = str(row[title_col]) if pd.notna(row[title_col]) else ""
+                description = title
+                
+                if code:
+                    current_time = datetime.now().isoformat()
+                    params_list.append((code, title, description, 'General', current_time))
+        
+        if params_list:
+            execute_many(
+                "INSERT INTO isic_cache (code, title, description, category, last_updated) VALUES (?, ?, ?, ?, ?)",
+                params_list
+            )
+            
+    except Exception as e:
+        st.warning(f"Could not cache ISIC data: {str(e)}")
+
+def load_isic_from_cache():
+    """Load ISIC data from database cache"""
+    try:
+        result = execute_query("SELECT code, title, description FROM isic_cache", return_result=True)
+        if result and isinstance(result, tuple) and result[0]:
+            result_data, columns = result
+            df = pd.DataFrame(result_data, columns=columns)
+            
+            if not df.empty:
+                st.info("📁 Loaded ISIC data from cache")
+                return df
+            else:
+                st.warning("No ISIC data available. Using basic codes.")
+                return create_basic_isic_data()
+        else:
+            return create_basic_isic_data()
+    except:
+        return create_basic_isic_data()
+
+def create_basic_isic_data():
+    """Create basic ISIC data structure"""
+    basic_data = {
+        'Code': ['0111', '0112', '0113', '0114', '0115', '0116', '0121', '0122', 
+                '4100', '4101', '4102', '4310', '4311', '4312', '4320', '4321',
+                '4610', '4620', '4630', '4651', '4652', '4661', '4662'],
+        'Title': [
+            'Growing of cereals (except rice), leguminous crops and oil seeds',
+            'Growing of rice',
+            'Growing of vegetables and melons, roots and tubers',
+            'Growing of sugar cane',
+            'Growing of tobacco',
+            'Growing of fibre crops',
+            'Growing of grapes',
+            'Growing of tropical and subtropical fruits',
+            'Construction of buildings',
+            'Construction of residential buildings',
+            'Construction of non-residential buildings',
+            'Demolition and site preparation',
+            'Demolition',
+            'Site preparation',
+            'Electrical, plumbing and other construction installation activities',
+            'Electrical installation',
+            'Wholesale on a fee or contract basis',
+            'Wholesale of agricultural raw materials and live animals',
+            'Wholesale of food, beverages and tobacco',
+            'Wholesale of computers, computer peripheral equipment and software',
+            'Wholesale of electronic and telecommunications equipment and parts',
+            'Wholesale of agricultural machinery, equipment and supplies',
+            'Wholesale of construction machinery, equipment and supplies'
+        ]
+    }
+    return pd.DataFrame(basic_data)
+
+def search_isic_codes_enhanced(search_term, isic_df):
+    """Enhanced ISIC search with multiple matching strategies"""
+    if isic_df is None or not search_term:
+        return []
+    
+    search_term = str(search_term).strip().lower()
+    
+    try:
+        # Try different column combinations
+        code_col = next((col for col in ['Code', 'CODE', 'code'] if col in isic_df.columns), None)
+        title_col = next((col for col in ['Title', 'TITLE', 'title', 'Description', 'DESCRIPTION'] if col in isic_df.columns), None)
+        
+        if not code_col or not title_col:
+            return []
+        
+        # Multiple search strategies
+        exact_code_matches = isic_df[isic_df[code_col].astype(str).str.lower() == search_term]
+        code_contains = isic_df[isic_df[code_col].astype(str).str.lower().str.contains(search_term, na=False)]
+        title_contains = isic_df[isic_df[title_col].astype(str).str.lower().str.contains(search_term, na=False)]
+        
+        # Combine results
+        results = pd.concat([exact_code_matches, code_contains, title_contains]).drop_duplicates()
+        
+        formatted_results = []
+        for _, row in results.iterrows():
+            code = str(row[code_col]).strip()
+            title = str(row[title_col]).strip()
+            if code and title:
+                formatted_results.append({
+                    'code': code,
+                    'title': title,
+                    'display': f"{code} - {title}",
+                    'full_info': f"ISIC {code}: {title}"
+                })
+        
+        return formatted_results[:20]  # Limit results
+        
+    except Exception as e:
+        st.error(f"Search error: {str(e)}")
+        return []
+
+# Enhanced data for dropdowns
+DISTRICTS = ["Lusaka", "Kitwe", "Kasama", "Ndola", "Livingstone", "Other (Please specify)"]
+INTERVIEWERS = list(INTERVIEWER_CREDENTIALS.keys())
+
+# Application modes
+APPLICATION_MODES = ["Entirely In-Person", "Mixed", "Entirely Online"]
+
+# Enhanced session state initialization
+def initialize_session_state():
+    defaults = {
+        'custom_procedures': [],
+        'custom_authorities': [],
+        'procedures_list': [],
+        'current_section': 'A',
+        'current_interview_id': None,
+        'form_data': {},
+        'selected_isic_codes': [],
+        'manual_isic_input': "",
+        'selected_isic_for_business': "",
+        'isic_search_term': "",
+        'show_detailed_form': False,
+        'use_template': False,
+        'interview_start_time': None,
+        'active_procedure_index': None,
+        'district_specific_notes': {},
+        'isic_df': None,
+        'business_activities_text': "",
+        'bulk_procedure_mode': False,
+        'quick_manual_mode': False,
+        'admin_logged_in': False,
+        'interviewer_logged_in': False,
+        'current_user': None,
+        'user_role': None,
+        'app_mode': 'login'
+    }
+    
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
 # Draft Manager with SQLite Cloud
 class DraftManager:
     def __init__(self):
@@ -95,7 +471,7 @@ class DraftManager:
             ORDER BY last_modified DESC
             """
             result = execute_query(query, (username,), return_result=True)
-            if result and result[0]:
+            if result and isinstance(result, tuple) and result[0]:
                 result_data, columns = result
                 df = pd.DataFrame(result_data, columns=columns)
                 return df
@@ -117,7 +493,7 @@ class DraftManager:
             ORDER BY last_modified DESC
             """
             result = execute_query(query, return_result=True)
-            if result and result[0]:
+            if result and isinstance(result, tuple) and result[0]:
                 result_data, columns = result
                 df = pd.DataFrame(result_data, columns=columns)
                 return df
@@ -131,7 +507,7 @@ class DraftManager:
         try:
             query = "SELECT * FROM responses WHERE interview_id = ?"
             result = execute_query(query, (interview_id,), return_result=True)
-            if result and result[0]:
+            if result and isinstance(result, tuple) and result[0]:
                 result_data, columns = result
                 # Convert to dictionary
                 return dict(zip(columns, result_data[0]))
@@ -405,366 +781,6 @@ def auto_save_draft():
         return True
     return False
 
-# Set page config MUST be first
-st.set_page_config(
-    page_title="Zambia Regulatory Compliance Survey",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# Enhanced credentials with individual interviewer passwords
-INTERVIEWER_CREDENTIALS = {
-    "Fizie Fulumaka": {"password": "fizie2024", "role": "interviewer"},
-    "Sanderson Mweemba": {"password": "sanderson2024", "role": "interviewer"},
-    "Anastazia Mtonga": {"password": "anastazia2024", "role": "interviewer"},
-    "Sarah Namutowe": {"password": "sarah2024", "role": "interviewer"},
-    "Boris Divjak": {"password": "boris2024", "role": "interviewer"},
-    "Other": {"password": "other2024", "role": "interviewer"}
-}
-
-ADMIN_CREDENTIALS = {
-    "admin": {"password": "compliance2024", "role": "admin"},
-    "researcher": {"password": "data2024", "role": "researcher"}
-}
-
-# Initialize database with enhanced schema
-def init_db():
-    """Initialize database tables in SQLite Cloud"""
-    conn = get_connection()
-    if conn is None:
-        return
-    
-    try:
-        c = conn.cursor()
-        
-        # Main responses table
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS responses (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                interview_id TEXT UNIQUE,
-                interviewer_name TEXT,
-                interview_date TEXT,
-                start_time TEXT,
-                end_time TEXT,
-                business_name TEXT,
-                district TEXT,
-                physical_address TEXT,
-                contact_person TEXT,
-                email TEXT,
-                phone TEXT,
-                primary_sector TEXT,
-                legal_status TEXT,
-                business_size TEXT,
-                ownership_structure TEXT,
-                gender_owner TEXT,
-                business_activities TEXT,
-                isic_codes TEXT,
-                year_established INTEGER,
-                turnover_range TEXT,
-                employees_fulltime INTEGER,
-                employees_parttime INTEGER,
-                procedure_data TEXT,
-                completion_time_local REAL,
-                completion_time_national REAL,
-                completion_time_dk REAL,
-                compliance_cost_percentage REAL,
-                permit_comparison_national INTEGER,
-                permit_comparison_local INTEGER,
-                cost_comparison_national INTEGER,
-                cost_comparison_local INTEGER,
-                business_climate_rating INTEGER,
-                reform_priorities TEXT,
-                status TEXT DEFAULT 'draft',
-                submission_date TIMESTAMP,
-                last_modified TIMESTAMP,
-                total_compliance_cost REAL DEFAULT 0,
-                total_compliance_time INTEGER DEFAULT 0,
-                risk_score REAL DEFAULT 0,
-                created_by TEXT,
-                current_section TEXT DEFAULT 'A',
-                draft_progress REAL DEFAULT 0
-            )
-        ''')
-        
-        # ISIC codes cache table
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS isic_cache (
-                code TEXT PRIMARY KEY,
-                title TEXT,
-                description TEXT,
-                category TEXT,
-                last_updated TIMESTAMP
-            )
-        ''')
-        
-        # Templates table
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS templates (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT UNIQUE,
-                sector TEXT,
-                business_size TEXT,
-                data TEXT,
-                created_date TIMESTAMP
-            )
-        ''')
-        
-        # Admin logs table
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS admin_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT,
-                action TEXT,
-                timestamp TIMESTAMP,
-                details TEXT
-            )
-        ''')
-        
-        # User sessions table
-        c.execute('''
-            CREATE TABLE IF NOT EXISTS user_sessions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT,
-                login_time TIMESTAMP,
-                logout_time TIMESTAMP,
-                session_duration INTEGER
-            )
-        ''')
-        
-        conn.commit()
-        st.success("✅ Database tables initialized successfully!")
-        
-    except Exception as e:
-        st.error(f"❌ Database initialization error: {str(e)}")
-    finally:
-        conn.close()
-
-def add_missing_columns():
-    """Add missing columns to existing database tables"""
-    try:
-        # Check if created_by column exists in responses table
-        result = execute_query("PRAGMA table_info(responses)", return_result=True)
-        if result and result[0]:
-            columns = [column[1] for column in result[0]]
-            
-            missing_columns = []
-            
-            if 'created_by' not in columns:
-                missing_columns.append('created_by')
-            if 'current_section' not in columns:
-                missing_columns.append('current_section')
-            if 'draft_progress' not in columns:
-                missing_columns.append('draft_progress')
-            
-            if missing_columns:
-                st.info("🔄 Updating database schema...")
-                for column in missing_columns:
-                    if column == 'created_by':
-                        execute_query("ALTER TABLE responses ADD COLUMN created_by TEXT")
-                    elif column == 'current_section':
-                        execute_query("ALTER TABLE responses ADD COLUMN current_section TEXT DEFAULT 'A'")
-                    elif column == 'draft_progress':
-                        execute_query("ALTER TABLE responses ADD COLUMN draft_progress REAL DEFAULT 0")
-                
-                st.success("✅ Database schema updated successfully!")
-                
-    except Exception as e:
-        st.warning(f"Database schema update: {str(e)}")
-
-# Enhanced ISIC data management
-@st.cache_data
-def load_isic_dataframe():
-    """Load ISIC data from Excel file and return as DataFrame"""
-    excel_files = [
-        "Complete_ISIC5_Structure_16Dec2022final.xlsx",
-        "ISIC_Codes.xlsx", 
-        "isic_codes.xlsx",
-        "Complete_ISIC5.xlsx",
-        "ISIC_4.xlsx",
-        "isic_data.xlsx"
-    ]
-    
-    for filename in excel_files:
-        if os.path.exists(filename):
-            try:
-                df = pd.read_excel(filename)
-                st.success(f"✅ ISIC database loaded from: {filename}")
-                
-                # Cache the data
-                cache_isic_data(df)
-                return df
-            except Exception as e:
-                st.warning(f"Could not load {filename}: {str(e)}")
-                continue
-    
-    # If no file found, try to load from cache
-    return load_isic_from_cache()
-
-def cache_isic_data(df):
-    """Cache ISIC data in database for faster access"""
-    try:
-        # Clear existing cache
-        execute_query("DELETE FROM isic_cache")
-        
-        # Insert new data
-        params_list = []
-        for _, row in df.iterrows():
-            code_col = next((col for col in ['Code', 'CODE', 'code'] if col in df.columns), None)
-            title_col = next((col for col in ['Title', 'TITLE', 'title'] if col in df.columns), None)
-            
-            if code_col and title_col:
-                code = str(row[code_col]) if pd.notna(row[code_col]) else None
-                title = str(row[title_col]) if pd.notna(row[title_col]) else ""
-                description = title
-                
-                if code:
-                    current_time = datetime.now().isoformat()
-                    params_list.append((code, title, description, 'General', current_time))
-        
-        if params_list:
-            execute_many(
-                "INSERT INTO isic_cache (code, title, description, category, last_updated) VALUES (?, ?, ?, ?, ?)",
-                params_list
-            )
-            
-    except Exception as e:
-        st.warning(f"Could not cache ISIC data: {str(e)}")
-
-def load_isic_from_cache():
-    """Load ISIC data from database cache"""
-    try:
-        result = execute_query("SELECT code, title, description FROM isic_cache", return_result=True)
-        if result and result[0]:
-            result_data, columns = result
-            df = pd.DataFrame(result_data, columns=columns)
-            
-            if not df.empty:
-                st.info("📁 Loaded ISIC data from cache")
-                return df
-            else:
-                st.warning("No ISIC data available. Using basic codes.")
-                return create_basic_isic_data()
-        else:
-            return create_basic_isic_data()
-    except:
-        return create_basic_isic_data()
-
-def create_basic_isic_data():
-    """Create basic ISIC data structure"""
-    basic_data = {
-        'Code': ['0111', '0112', '0113', '0114', '0115', '0116', '0121', '0122', 
-                '4100', '4101', '4102', '4310', '4311', '4312', '4320', '4321',
-                '4610', '4620', '4630', '4651', '4652', '4661', '4662'],
-        'Title': [
-            'Growing of cereals (except rice), leguminous crops and oil seeds',
-            'Growing of rice',
-            'Growing of vegetables and melons, roots and tubers',
-            'Growing of sugar cane',
-            'Growing of tobacco',
-            'Growing of fibre crops',
-            'Growing of grapes',
-            'Growing of tropical and subtropical fruits',
-            'Construction of buildings',
-            'Construction of residential buildings',
-            'Construction of non-residential buildings',
-            'Demolition and site preparation',
-            'Demolition',
-            'Site preparation',
-            'Electrical, plumbing and other construction installation activities',
-            'Electrical installation',
-            'Wholesale on a fee or contract basis',
-            'Wholesale of agricultural raw materials and live animals',
-            'Wholesale of food, beverages and tobacco',
-            'Wholesale of computers, computer peripheral equipment and software',
-            'Wholesale of electronic and telecommunications equipment and parts',
-            'Wholesale of agricultural machinery, equipment and supplies',
-            'Wholesale of construction machinery, equipment and supplies'
-        ]
-    }
-    return pd.DataFrame(basic_data)
-
-def search_isic_codes_enhanced(search_term, isic_df):
-    """Enhanced ISIC search with multiple matching strategies"""
-    if isic_df is None or not search_term:
-        return []
-    
-    search_term = str(search_term).strip().lower()
-    
-    try:
-        # Try different column combinations
-        code_col = next((col for col in ['Code', 'CODE', 'code'] if col in isic_df.columns), None)
-        title_col = next((col for col in ['Title', 'TITLE', 'title', 'Description', 'DESCRIPTION'] if col in isic_df.columns), None)
-        
-        if not code_col or not title_col:
-            return []
-        
-        # Multiple search strategies
-        exact_code_matches = isic_df[isic_df[code_col].astype(str).str.lower() == search_term]
-        code_contains = isic_df[isic_df[code_col].astype(str).str.lower().str.contains(search_term, na=False)]
-        title_contains = isic_df[isic_df[title_col].astype(str).str.lower().str.contains(search_term, na=False)]
-        
-        # Combine results
-        results = pd.concat([exact_code_matches, code_contains, title_contains]).drop_duplicates()
-        
-        formatted_results = []
-        for _, row in results.iterrows():
-            code = str(row[code_col]).strip()
-            title = str(row[title_col]).strip()
-            if code and title:
-                formatted_results.append({
-                    'code': code,
-                    'title': title,
-                    'display': f"{code} - {title}",
-                    'full_info': f"ISIC {code}: {title}"
-                })
-        
-        return formatted_results[:20]  # Limit results
-        
-    except Exception as e:
-        st.error(f"Search error: {str(e)}")
-        return []
-
-# Enhanced data for dropdowns
-DISTRICTS = ["Lusaka", "Kitwe", "Kasama", "Ndola", "Livingstone", "Other (Please specify)"]
-INTERVIEWERS = list(INTERVIEWER_CREDENTIALS.keys())
-
-# Application modes
-APPLICATION_MODES = ["Entirely In-Person", "Mixed", "Entirely Online"]
-
-# Enhanced session state initialization
-def initialize_session_state():
-    defaults = {
-        'custom_procedures': [],
-        'custom_authorities': [],
-        'procedures_list': [],
-        'current_section': 'A',
-        'current_interview_id': None,
-        'form_data': {},
-        'selected_isic_codes': [],
-        'manual_isic_input': "",
-        'selected_isic_for_business': "",
-        'isic_search_term': "",
-        'show_detailed_form': False,
-        'use_template': False,
-        'interview_start_time': None,
-        'active_procedure_index': None,
-        'district_specific_notes': {},
-        'isic_df': None,
-        'business_activities_text': "",
-        'bulk_procedure_mode': False,
-        'quick_manual_mode': False,
-        'admin_logged_in': False,
-        'interviewer_logged_in': False,
-        'current_user': None,
-        'user_role': None,
-        'app_mode': 'login'
-    }
-    
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
-
 # Database functions - SQLite Cloud VERSION
 def save_draft(data, interview_id=None):
     """Save form data as draft with enhanced calculations and progress tracking"""
@@ -794,7 +810,7 @@ def save_draft(data, interview_id=None):
         # Check if record exists
         existing_result = execute_query("SELECT id FROM responses WHERE interview_id = ?", (interview_id,), return_result=True)
         
-        if existing_result and existing_result[0]:
+        if existing_result and isinstance(existing_result, tuple) and existing_result[0]:
             # Update existing draft
             update_query = '''
                 UPDATE responses SET
@@ -932,8 +948,8 @@ def check_duplicate_business_name(business_name, current_interview_id=None):
             # Check for any duplicates
             result = execute_query("SELECT COUNT(*) FROM responses WHERE business_name = ?", (business_name,), return_result=True)
         
-        if result and result[0]:
-            count = result[0][0][0]
+        if result and isinstance(result, tuple) and result[0]:
+            count = result[0][0][0] if result[0] else 0
             return count > 0
         return False
     except Exception as e:
@@ -971,7 +987,7 @@ def get_all_interviews():
     try:
         # First check if created_by column exists
         result = execute_query("PRAGMA table_info(responses)", return_result=True)
-        if result and result[0]:
+        if result and isinstance(result, tuple) and result[0]:
             columns = [column[1] for column in result[0]]
             
             if 'created_by' in columns:
@@ -995,7 +1011,7 @@ def get_all_interviews():
                 """
             
             result = execute_query(query, return_result=True)
-            if result and result[0]:
+            if result and isinstance(result, tuple) and result[0]:
                 result_data, columns = result
                 df = pd.DataFrame(result_data, columns=columns)
                 return df
@@ -1009,7 +1025,7 @@ def get_user_interviews(username):
     try:
         # Check if created_by column exists
         result = execute_query("PRAGMA table_info(responses)", return_result=True)
-        if result and result[0]:
+        if result and isinstance(result, tuple) and result[0]:
             columns = [column[1] for column in result[0]]
             
             if 'created_by' in columns:
@@ -1035,7 +1051,7 @@ def get_user_interviews(username):
                 """
                 result = execute_query(query, return_result=True)
             
-            if result and result[0]:
+            if result and isinstance(result, tuple) and result[0]:
                 result_data, columns = result
                 df = pd.DataFrame(result_data, columns=columns)
                 return df
@@ -1049,7 +1065,7 @@ def get_interview_details(interview_id):
     try:
         query = "SELECT * FROM responses WHERE interview_id = ?"
         result = execute_query(query, (interview_id,), return_result=True)
-        if result and result[0]:
+        if result and isinstance(result, tuple) and result[0]:
             result_data, columns = result
             df = pd.DataFrame(result_data, columns=columns)
             return df
@@ -1065,28 +1081,28 @@ def get_database_stats():
         
         # Total interviews
         result = execute_query("SELECT COUNT(*) as count FROM responses", return_result=True)
-        if result and result[0]:
-            stats['total_interviews'] = result[0][0][0]
+        if result and isinstance(result, tuple) and result[0]:
+            stats['total_interviews'] = result[0][0][0] if result[0] else 0
         
         result = execute_query("SELECT COUNT(*) as count FROM responses WHERE status = 'submitted'", return_result=True)
-        if result and result[0]:
-            stats['submitted_interviews'] = result[0][0][0]
+        if result and isinstance(result, tuple) and result[0]:
+            stats['submitted_interviews'] = result[0][0][0] if result[0] else 0
         
         result = execute_query("SELECT COUNT(*) as count FROM responses WHERE status = 'draft'", return_result=True)
-        if result and result[0]:
-            stats['draft_interviews'] = result[0][0][0]
+        if result and isinstance(result, tuple) and result[0]:
+            stats['draft_interviews'] = result[0][0][0] if result[0] else 0
         
         # User-specific stats
         if st.session_state.user_role == 'interviewer' and st.session_state.current_user:
             result = execute_query("SELECT COUNT(*) as count FROM responses WHERE created_by = ?", (st.session_state.current_user,), return_result=True)
-            if result and result[0]:
-                stats['user_interviews'] = result[0][0][0]
+            if result and isinstance(result, tuple) and result[0]:
+                stats['user_interviews'] = result[0][0][0] if result[0] else 0
             else:
                 stats['user_interviews'] = 0
         
         # Sector distribution
         result = execute_query("SELECT primary_sector, COUNT(*) as count FROM responses GROUP BY primary_sector", return_result=True)
-        if result and result[0]:
+        if result and isinstance(result, tuple) and result[0]:
             result_data, columns = result
             stats['sector_dist'] = pd.DataFrame(result_data, columns=columns)
         else:
@@ -1094,7 +1110,7 @@ def get_database_stats():
         
         # District distribution
         result = execute_query("SELECT district, COUNT(*) as count FROM responses GROUP BY district", return_result=True)
-        if result and result[0]:
+        if result and isinstance(result, tuple) and result[0]:
             result_data, columns = result
             stats['district_dist'] = pd.DataFrame(result_data, columns=columns)
         else:
@@ -1102,7 +1118,7 @@ def get_database_stats():
         
         # Business size distribution
         result = execute_query("SELECT business_size, COUNT(*) as count FROM responses GROUP BY business_size", return_result=True)
-        if result and result[0]:
+        if result and isinstance(result, tuple) and result[0]:
             result_data, columns = result
             stats['size_dist'] = pd.DataFrame(result_data, columns=columns)
         else:
@@ -1117,7 +1133,7 @@ def get_database_stats():
             FROM responses 
             WHERE status = 'submitted'
         """, return_result=True)
-        if result and result[0]:
+        if result and isinstance(result, tuple) and result[0]:
             result_data, columns = result
             stats['avg_metrics'] = pd.DataFrame(result_data, columns=columns)
         else:
@@ -2547,7 +2563,7 @@ def user_management_section():
                 ORDER BY total_interviews DESC
             """, return_result=True)
             
-            if result and result[0]:
+            if result and isinstance(result, tuple) and result[0]:
                 result_data, columns = result
                 user_stats = pd.DataFrame(result_data, columns=columns)
                 
@@ -2577,7 +2593,7 @@ def display_user_sessions():
     """Display user session logs"""
     try:
         result = execute_query("SELECT * FROM user_sessions ORDER BY login_time DESC LIMIT 100", return_result=True)
-        if result and result[0]:
+        if result and isinstance(result, tuple) and result[0]:
             result_data, columns = result
             sessions_df = pd.DataFrame(result_data, columns=columns)
             st.dataframe(sessions_df, use_container_width=True)
@@ -2623,7 +2639,7 @@ def display_admin_logs():
     """Display admin action logs"""
     try:
         result = execute_query("SELECT * FROM admin_logs ORDER BY timestamp DESC LIMIT 100", return_result=True)
-        if result and result[0]:
+        if result and isinstance(result, tuple) and result[0]:
             result_data, columns = result
             logs_df = pd.DataFrame(result_data, columns=columns)
             st.subheader("📝 Admin Action Logs")
