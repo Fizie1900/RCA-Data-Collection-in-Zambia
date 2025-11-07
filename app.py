@@ -17,7 +17,7 @@ try:
     from interview_editor import interview_editor_main, InterviewEditor
 except ImportError:
     def interview_editor_main():
-        st.info("Interview Editor module not available")
+        st.info("📝 Interview Editor - No interviews available yet")
     
     class InterviewEditor:
         pass
@@ -26,10 +26,10 @@ try:
     from analytics_dashboard import analytics_main, create_interactive_dashboard
 except ImportError:
     def analytics_main():
-        st.info("Analytics Dashboard module not available")
+        st.info("📊 Analytics Dashboard - No data available yet")
     
     def create_interactive_dashboard():
-        st.info("Interactive Dashboard not available")
+        st.info("📈 Interactive Dashboard - No data available yet")
 
 # SQLite Cloud configuration
 SQLITECLOUD_CONFIG = {
@@ -116,7 +116,7 @@ ADMIN_CREDENTIALS = {
     "researcher": {"password": "data2024", "role": "researcher"}
 }
 
-# Initialize database with FIXED schema (44 columns - CORRECTED)
+# Initialize database with FIXED schema
 def init_db():
     """Initialize database tables in SQLite Cloud with FIXED schema"""
     conn = get_connection()
@@ -126,10 +126,7 @@ def init_db():
     try:
         c = conn.cursor()
         
-        # Drop table if exists to recreate with correct schema
-        c.execute('DROP TABLE IF EXISTS responses')
-        
-        # Main responses table - FIXED: 44 columns exactly (removed external_support_details)
+        # Main responses table - FIXED schema
         c.execute('''
             CREATE TABLE IF NOT EXISTS responses (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -224,7 +221,7 @@ def init_db():
         ''')
         
         conn.commit()
-        st.success("✅ Database tables initialized successfully with FIXED schema!")
+        st.success("✅ Database tables initialized successfully!")
         return True
         
     except Exception as e:
@@ -243,21 +240,13 @@ def check_and_fix_database():
             st.warning("📊 Database not found. Initializing...")
             return init_db()
         
-        # Check if we have the correct number of columns
-        result = execute_query("PRAGMA table_info(responses)", return_result=True)
-        if result and isinstance(result, tuple) and result[0]:
-            column_count = len(result[0])
-            if column_count != 44:
-                st.warning(f"🔄 Database schema mismatch: found {column_count} columns, expected 44. Recreating...")
-                return init_db()
-        
         return True
     except Exception as e:
         st.error(f"Error checking database: {str(e)}")
         return init_db()
 
 def add_missing_columns():
-    """Add missing columns to existing database tables - FIXED VERSION"""
+    """Add missing columns to existing database tables"""
     try:
         # Check if responses table exists first
         result = execute_query("SELECT name FROM sqlite_master WHERE type='table' AND name='responses'", return_result=True)
@@ -818,9 +807,9 @@ def auto_save_draft():
         return True
     return False
 
-# Database functions - FIXED VERSION with 44 columns
+# Database functions - FIXED VERSION
 def save_draft(data, interview_id=None):
-    """Save form data as draft with enhanced calculations and progress tracking - FIXED for 44 columns"""
+    """Save form data as draft with enhanced calculations and progress tracking"""
     try:
         if not interview_id:
             interview_id = generate_interview_id()
@@ -848,7 +837,7 @@ def save_draft(data, interview_id=None):
         existing_result = execute_query("SELECT id FROM responses WHERE interview_id = ?", (interview_id,), return_result=True)
         
         if existing_result and isinstance(existing_result, tuple) and existing_result[0]:
-            # Update existing draft - FIXED: 43 values for 43 columns in UPDATE
+            # Update existing draft
             update_query = '''
                 UPDATE responses SET
                     interviewer_name=?, interview_date=?, start_time=?, end_time=?,
@@ -910,7 +899,7 @@ def save_draft(data, interview_id=None):
             )
             result = execute_query(update_query, params)
         else:
-            # Insert new draft - FIXED: 43 values for 43 columns in INSERT (id is auto-increment)
+            # Insert new draft
             insert_query = '''
                 INSERT INTO responses (
                     interview_id, interviewer_name, interview_date, start_time, end_time,
@@ -1030,86 +1019,53 @@ def generate_interview_id():
     return f"INT_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
 def get_all_interviews():
-    """Get all interviews from database - FIXED VERSION"""
+    """Get all interviews from database"""
     try:
         # First ensure database is properly initialized
         if not check_and_fix_database():
             return pd.DataFrame()
             
-        # Check if created_by column exists
-        result = execute_query("PRAGMA table_info(responses)", return_result=True)
+        query = """
+        SELECT 
+            interview_id, business_name, district, primary_sector, 
+            business_size, status, submission_date, last_modified,
+            total_compliance_cost, total_compliance_time, risk_score, created_by
+        FROM responses 
+        ORDER BY last_modified DESC
+        """
+        
+        result = execute_query(query, return_result=True)
         if result and isinstance(result, tuple) and result[0]:
-            columns = [column[1] for column in result[0]]
-            
-            if 'created_by' in columns:
-                query = """
-                SELECT 
-                    interview_id, business_name, district, primary_sector, 
-                    business_size, status, submission_date, last_modified,
-                    total_compliance_cost, total_compliance_time, risk_score, created_by
-                FROM responses 
-                ORDER BY last_modified DESC
-                """
-            else:
-                # Fallback query without created_by column
-                query = """
-                SELECT 
-                    interview_id, business_name, district, primary_sector, 
-                    business_size, status, submission_date, last_modified,
-                    total_compliance_cost, total_compliance_time, risk_score
-                FROM responses 
-                ORDER BY last_modified DESC
-                """
-            
-            result = execute_query(query, return_result=True)
-            if result and isinstance(result, tuple) and result[0]:
-                result_data, columns = result
-                df = pd.DataFrame(result_data, columns=columns)
-                return df
+            result_data, columns = result
+            df = pd.DataFrame(result_data, columns=columns)
+            return df
         return pd.DataFrame()
     except Exception as e:
         st.error(f"Error loading interviews: {str(e)}")
         return pd.DataFrame()
 
 def get_user_interviews(username):
-    """Get interviews created by specific user - FIXED VERSION"""
+    """Get interviews created by specific user"""
     try:
         # First ensure database is properly initialized
         if not check_and_fix_database():
             return pd.DataFrame()
             
-        # Check if created_by column exists
-        result = execute_query("PRAGMA table_info(responses)", return_result=True)
+        query = """
+        SELECT 
+            interview_id, business_name, district, primary_sector, 
+            business_size, status, submission_date, last_modified,
+            total_compliance_cost, total_compliance_time, risk_score
+        FROM responses 
+        WHERE created_by = ?
+        ORDER BY last_modified DESC
+        """
+        
+        result = execute_query(query, (username,), return_result=True)
         if result and isinstance(result, tuple) and result[0]:
-            columns = [column[1] for column in result[0]]
-            
-            if 'created_by' in columns:
-                query = """
-                SELECT 
-                    interview_id, business_name, district, primary_sector, 
-                    business_size, status, submission_date, last_modified,
-                    total_compliance_cost, total_compliance_time, risk_score
-                FROM responses 
-                WHERE created_by = ?
-                ORDER BY last_modified DESC
-                """
-                result = execute_query(query, (username,), return_result=True)
-            else:
-                # If created_by column doesn't exist, return all interviews for now
-                query = """
-                SELECT 
-                    interview_id, business_name, district, primary_sector, 
-                    business_size, status, submission_date, last_modified,
-                    total_compliance_cost, total_compliance_time, risk_score
-                FROM responses 
-                ORDER BY last_modified DESC
-                """
-                result = execute_query(query, return_result=True)
-            
-            if result and isinstance(result, tuple) and result[0]:
-                result_data, columns = result
-                df = pd.DataFrame(result_data, columns=columns)
-                return df
+            result_data, columns = result
+            df = pd.DataFrame(result_data, columns=columns)
+            return df
         return pd.DataFrame()
     except Exception as e:
         st.error(f"Error loading user interviews: {str(e)}")
@@ -1210,21 +1166,12 @@ def get_database_stats():
 def add_quick_edit_options():
     """Add quick edit options to data management views"""
     if st.session_state.get('admin_logged_in', False):
-        # Use session state to track if we've already shown this in the current context
-        if 'quick_edit_shown' not in st.session_state:
-            st.session_state.quick_edit_shown = set()
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("🛠️ Quick Actions")
         
-        current_context = str(st.session_state.get('_runnable_script_hash', 'default'))
-        
-        if current_context not in st.session_state.quick_edit_shown:
-            st.sidebar.markdown("---")
-            st.sidebar.subheader("🛠️ Quick Actions")
-            
-            if st.sidebar.button("✏️ Open Interview Editor", width='stretch', key="quick_edit_unique"):
-                st.session_state.current_section = 'Edit_Interviews'
-                st.rerun()
-            
-            st.session_state.quick_edit_shown.add(current_context)
+        if st.sidebar.button("✏️ Open Interview Editor", width='stretch', key="quick_edit_unique"):
+            st.session_state.current_section = 'Edit_Interviews'
+            st.rerun()
             
 def log_admin_action(username, action, details=""):
     """Log admin actions"""
