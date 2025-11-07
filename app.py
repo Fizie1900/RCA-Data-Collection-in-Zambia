@@ -116,7 +116,7 @@ ADMIN_CREDENTIALS = {
     "researcher": {"password": "data2024", "role": "researcher"}
 }
 
-# Initialize database with FIXED schema (44 columns)
+# Initialize database with FIXED schema (44 columns - CORRECTED)
 def init_db():
     """Initialize database tables in SQLite Cloud with FIXED schema"""
     conn = get_connection()
@@ -129,7 +129,7 @@ def init_db():
         # Drop table if exists to recreate with correct schema
         c.execute('DROP TABLE IF EXISTS responses')
         
-        # Main responses table - FIXED: 44 columns exactly
+        # Main responses table - FIXED: 44 columns exactly (removed external_support_details)
         c.execute('''
             CREATE TABLE IF NOT EXISTS responses (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -174,8 +174,7 @@ def init_db():
                 risk_score REAL DEFAULT 0,
                 created_by TEXT,
                 current_section TEXT DEFAULT 'A',
-                draft_progress REAL DEFAULT 0,
-                external_support_details TEXT DEFAULT ''  -- Added to make 44 columns
+                draft_progress REAL DEFAULT 0
             )
         ''')
         
@@ -276,7 +275,7 @@ def add_missing_columns():
             
             # Check for all required columns
             required_columns = [
-                'created_by', 'current_section', 'draft_progress', 'external_support_details'
+                'created_by', 'current_section', 'draft_progress'
             ]
             
             for column in required_columns:
@@ -292,8 +291,6 @@ def add_missing_columns():
                         execute_query("ALTER TABLE responses ADD COLUMN current_section TEXT DEFAULT 'A'")
                     elif column == 'draft_progress':
                         execute_query("ALTER TABLE responses ADD COLUMN draft_progress REAL DEFAULT 0")
-                    elif column == 'external_support_details':
-                        execute_query("ALTER TABLE responses ADD COLUMN external_support_details TEXT DEFAULT ''")
                 
                 st.success("✅ Database schema updated successfully!")
                 
@@ -649,13 +646,13 @@ def display_draft_dashboard():
     
     col1, col2 = st.sidebar.columns(2)
     with col1:
-        if st.button("🆕 New Interview", use_container_width=True, key="new_interview_btn"):
+        if st.button("🆕 New Interview", width='stretch', key="new_interview_btn"):
             reset_interview()
             st.session_state.current_section = 'A'
             st.rerun()
     
     with col2:
-        if st.button("🔄 Refresh", use_container_width=True, key="refresh_drafts"):
+        if st.button("🔄 Refresh", width='stretch', key="refresh_drafts"):
             st.rerun()
 
 def display_draft_card(draft_manager, draft, index):
@@ -686,12 +683,12 @@ def display_draft_card(draft_manager, draft, index):
             st.progress(progress / 100)
         
         with col2:
-            if st.button("➡️ Continue", key=f"continue_{index}", use_container_width=True):
+            if st.button("➡️ Continue", key=f"continue_{index}", width='stretch'):
                 load_draft_into_session(draft_manager, draft['interview_id'])
                 st.rerun()
         
         with col3:
-            if st.button("🗑️ Delete", key=f"delete_{index}", use_container_width=True):
+            if st.button("🗑️ Delete", key=f"delete_{index}", width='stretch'):
                 if draft_manager.delete_draft(draft['interview_id']):
                     st.success("✅ Draft deleted successfully!")
                     st.rerun()
@@ -787,14 +784,14 @@ def display_draft_quick_access():
                 if st.sidebar.button(
                     f"➡️ {business_name[:20]}... ({progress}%)", 
                     key=f"sidebar_draft_{index}",
-                    use_container_width=True
+                    width='stretch'
                 ):
                     load_draft_into_session(draft_manager, draft['interview_id'])
                     st.rerun()
             
             # Show "View All" if there are more drafts
             if len(drafts_df) > 3:
-                if st.sidebar.button("📋 View All Drafts", use_container_width=True):
+                if st.sidebar.button("📋 View All Drafts", width='stretch'):
                     st.session_state.current_section = 'Draft_Dashboard'
                     st.rerun()
 
@@ -851,7 +848,7 @@ def save_draft(data, interview_id=None):
         existing_result = execute_query("SELECT id FROM responses WHERE interview_id = ?", (interview_id,), return_result=True)
         
         if existing_result and isinstance(existing_result, tuple) and existing_result[0]:
-            # Update existing draft - FIXED: 44 columns
+            # Update existing draft - FIXED: 43 values for 43 columns in UPDATE
             update_query = '''
                 UPDATE responses SET
                     interviewer_name=?, interview_date=?, start_time=?, end_time=?,
@@ -866,7 +863,7 @@ def save_draft(data, interview_id=None):
                     cost_comparison_local=?, business_climate_rating=?,
                     reform_priorities=?, last_modified=?, total_compliance_cost=?,
                     total_compliance_time=?, risk_score=?, created_by=?,
-                    current_section=?, draft_progress=?, external_support_details=?
+                    current_section=?, draft_progress=?
                 WHERE interview_id=?
             '''
             params = (
@@ -909,16 +906,25 @@ def save_draft(data, interview_id=None):
                 st.session_state.current_user,
                 st.session_state.current_section,
                 progress,
-                '',  # external_support_details - empty for now
                 interview_id
             )
             result = execute_query(update_query, params)
         else:
-            # Insert new draft - FIXED: 44 values for 44 columns
+            # Insert new draft - FIXED: 43 values for 43 columns in INSERT (id is auto-increment)
             insert_query = '''
-                INSERT INTO responses VALUES (
-                    NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-                )
+                INSERT INTO responses (
+                    interview_id, interviewer_name, interview_date, start_time, end_time,
+                    business_name, district, physical_address, contact_person, email,
+                    phone, primary_sector, legal_status, business_size, ownership_structure,
+                    gender_owner, business_activities, isic_codes, year_established,
+                    turnover_range, employees_fulltime, employees_parttime, procedure_data,
+                    completion_time_local, completion_time_national, completion_time_dk,
+                    compliance_cost_percentage, permit_comparison_national,
+                    permit_comparison_local, cost_comparison_national, cost_comparison_local,
+                    business_climate_rating, reform_priorities, status, submission_date,
+                    last_modified, total_compliance_cost, total_compliance_time, risk_score,
+                    created_by, current_section, draft_progress
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             '''
             insert_data = (
                 interview_id,
@@ -962,8 +968,7 @@ def save_draft(data, interview_id=None):
                 risk_score,
                 st.session_state.current_user,
                 st.session_state.current_section,
-                progress,
-                ''  # external_support_details - empty for now
+                progress
             )
             result = execute_query(insert_query, insert_data)
         
@@ -1215,7 +1220,7 @@ def add_quick_edit_options():
             st.sidebar.markdown("---")
             st.sidebar.subheader("🛠️ Quick Actions")
             
-            if st.sidebar.button("✏️ Open Interview Editor", use_container_width=True, key="quick_edit_unique"):
+            if st.sidebar.button("✏️ Open Interview Editor", width='stretch', key="quick_edit_unique"):
                 st.session_state.current_section = 'Edit_Interviews'
                 st.rerun()
             
@@ -1446,7 +1451,7 @@ def quick_manual_procedure():
             "Complex": 4, "Very Complex": 5
         }
         
-        if st.form_submit_button("🚀 Add Procedure (Quick)", use_container_width=True):
+        if st.form_submit_button("🚀 Add Procedure (Quick)", width='stretch'):
             if quick_procedure and quick_authority:
                 procedure_data = {
                     'procedure': quick_procedure,
@@ -1557,19 +1562,19 @@ def enhanced_bulk_procedures_capture():
     quick_col1, quick_col2, quick_col3, quick_col4 = st.columns(4)
     
     with quick_col1:
-        if st.button("🏗️ All Construction", use_container_width=True, key="all_constr_btn"):
+        if st.button("🏗️ All Construction", width='stretch', key="all_constr_btn"):
             add_all_sector_templates("Construction", expanded_licenses)
     
     with quick_col2:
-        if st.button("🌾 All Agribusiness", use_container_width=True, key="all_agri_btn"):
+        if st.button("🌾 All Agribusiness", width='stretch', key="all_agri_btn"):
             add_all_sector_templates("Agribusiness", expanded_licenses)
     
     with quick_col3:
-        if st.button("🏛️ Common National", use_container_width=True, key="common_national_btn"):
+        if st.button("🏛️ Common National", width='stretch', key="common_national_btn"):
             add_common_national_licenses(sector)
     
     with quick_col4:
-        if st.button("🗑️ Clear All", use_container_width=True, key="clear_all_btn"):
+        if st.button("🗑️ Clear All", width='stretch', key="clear_all_btn"):
             st.session_state.procedures_list = []
             st.rerun()
     
@@ -1630,7 +1635,7 @@ def enhanced_bulk_procedures_capture():
                 include_docs = st.checkbox("Include common documents", value=True, key="include_docs")
                 auto_renewable = st.checkbox("Mark renewable as needed", value=True, key="auto_renew")
         
-        if st.form_submit_button("📥 Add Selected Licenses", use_container_width=True):
+        if st.form_submit_button("📥 Add Selected Licenses", width='stretch'):
             added_count = 0
             for license_name, license_data in selected_licenses:
                 template_data = expanded_licenses[sector][license_name]
@@ -1828,7 +1833,7 @@ def single_procedure_capture():
             application_mode = st.selectbox("Mode of Application *", APPLICATION_MODES, key="app_mode_single")
         
         # Time Analysis
-        st.write("**⏱️ Time Analysis**")
+        st.write("⏱️ Time Analysis")
         time_col1, time_col2, time_col3, time_col4 = st.columns(4)
         
         with time_col1:
@@ -1847,7 +1852,7 @@ def single_procedure_capture():
                                        key="total_days_single")
         
         # Cost Analysis
-        st.write("**💰 Cost Analysis**")
+        st.write("💰 Cost Analysis")
         cost_col1, cost_col2, cost_col3 = st.columns(3)
         
         with cost_col1:
@@ -1861,7 +1866,7 @@ def single_procedure_capture():
                                          key="travel_costs_single")
         
         # External Support
-        st.write("**🛠️ External Support**")
+        st.write("🛠️ External Support")
         support_col1, support_col2, support_col3 = st.columns(3)
         
         with support_col1:
@@ -1901,7 +1906,7 @@ def single_procedure_capture():
                            disabled=True, key="external_reason_disabled")
         
         # Complexity & Renewal
-        st.write("**📊 Assessment**")
+        st.write("📊 Assessment")
         assess_col1, assess_col2, assess_col3 = st.columns(3)
         
         with assess_col1:
@@ -1920,7 +1925,7 @@ def single_procedure_capture():
                 st.text_input("Renewal Frequency", value="N/A", disabled=True, key="renewal_freq_disabled")
         
         # Documents & Challenges
-        st.write("**📄 Requirements & Challenges**")
+        st.write("📄 Requirements & Challenges")
         
         num_documents = st.number_input("Number of Required Documents", min_value=0, max_value=15, value=0,
                                       key="num_docs_single")
@@ -1935,7 +1940,7 @@ def single_procedure_capture():
                                 height=80,
                                 key="challenges_single")
         
-        if st.form_submit_button("➕ Add This Procedure", use_container_width=True):
+        if st.form_submit_button("➕ Add This Procedure", width='stretch'):
             if procedure_name and regulatory_authority:
                 procedure_data = {
                     'procedure': procedure_name,
@@ -2083,7 +2088,7 @@ def display_procedure_details(procedure, index):
             
             col1, col2 = st.columns(2)
             with col1:
-                if st.form_submit_button("💾 Save Changes", use_container_width=True):
+                if st.form_submit_button("💾 Save Changes", width='stretch'):
                     st.session_state.procedures_list[index].update({
                         'status': new_status,
                         'complexity': new_complexity,
@@ -2095,7 +2100,7 @@ def display_procedure_details(procedure, index):
                     st.rerun()
             
             with col2:
-                if st.form_submit_button("❌ Cancel", use_container_width=True):
+                if st.form_submit_button("❌ Cancel", width='stretch'):
                     st.session_state.active_procedure_index = None
                     st.rerun()
 
@@ -2165,19 +2170,19 @@ def enhanced_section_b():
     mode_col1, mode_col2, mode_col3 = st.columns(3)
     
     with mode_col1:
-        if st.button("⚡ Quick Manual", use_container_width=True, key="quick_manual_btn"):
+        if st.button("⚡ Quick Manual", width='stretch', key="quick_manual_btn"):
             st.session_state.bulk_procedure_mode = False
             st.session_state.quick_manual_mode = True
             st.rerun()
     
     with mode_col2:
-        if st.button("🔧 Single Detailed", use_container_width=True, key="single_detailed_btn"):
+        if st.button("🔧 Single Detailed", width='stretch', key="single_detailed_btn"):
             st.session_state.bulk_procedure_mode = False
             st.session_state.quick_manual_mode = False
             st.rerun()
     
     with mode_col3:
-        if st.button("📊 Bulk Templates", use_container_width=True, key="bulk_templates_btn"):
+        if st.button("📊 Bulk Templates", width='stretch', key="bulk_templates_btn"):
             st.session_state.bulk_procedure_mode = True
             st.session_state.quick_manual_mode = False
             st.rerun()
@@ -2201,7 +2206,7 @@ def enhanced_section_b():
     save_col1, save_col2, save_col3 = st.columns(3)
     
     with save_col1:
-        if st.button("💾 Save Procedures", use_container_width=True, key="save_procedures_main"):
+        if st.button("💾 Save Procedures", width='stretch', key="save_procedures_main"):
             st.session_state.form_data['procedure_data'] = st.session_state.procedures_list
             interview_id = save_draft(st.session_state.form_data, st.session_state.current_interview_id)
             if interview_id:
@@ -2209,11 +2214,11 @@ def enhanced_section_b():
                 st.success(f"✅ Saved {len(st.session_state.procedures_list)} procedures!")
     
     with save_col2:
-        if st.button("📊 Generate Report", use_container_width=True, key="generate_report"):
+        if st.button("📊 Generate Report", width='stretch', key="generate_report"):
             generate_procedures_report()
     
     with save_col3:
-        if st.button("🔄 Reset Section", use_container_width=True, key="reset_section"):
+        if st.button("🔄 Reset Section", width='stretch', key="reset_section"):
             if st.session_state.procedures_list:
                 if st.checkbox("Confirm reset all procedures in this section"):
                     st.session_state.procedures_list = []
@@ -2271,7 +2276,7 @@ def login_system():
         
         password = st.text_input("Password", type="password", key="login_password")
         
-        if st.form_submit_button("Login", use_container_width=True):
+        if st.form_submit_button("Login", width='stretch'):
             if login_type == "Interviewer":
                 credentials = INTERVIEWER_CREDENTIALS
             else:
@@ -2379,7 +2384,7 @@ def admin_navigation():
     st.sidebar.write(f"Logged in as: **{st.session_state.current_user}**")
     st.sidebar.write(f"Role: **{st.session_state.user_role}**")
     
-    if st.sidebar.button("🚪 Logout", use_container_width=True, key="admin_logout_btn"):
+    if st.sidebar.button("🚪 Logout", width='stretch', key="admin_logout_btn"):
         logout()
     
     st.sidebar.markdown("---")
@@ -2559,7 +2564,7 @@ def data_export_section():
                 data=csv,
                 file_name=f"compliance_data_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv",
-                use_container_width=True,
+                width='stretch',
                 key="download_full_csv"
             )
         
@@ -2587,7 +2592,7 @@ def data_export_section():
                 data=excel_data,
                 file_name=f"compliance_data_{datetime.now().strftime('%Y%m%d')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
+                width='stretch',
                 key="download_full_excel"
             )
         
@@ -2599,7 +2604,7 @@ def data_export_section():
             data=json_data,
             file_name=f"compliance_data_{datetime.now().strftime('%Y%m%d')}.json",
             mime="application/json",
-            use_container_width=True,
+            width='stretch',
             key="download_full_json"
         )
     else:
@@ -2687,18 +2692,18 @@ def database_tools_section():
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("🔄 Refresh Database Cache", use_container_width=True, key="refresh_cache_btn"):
+        if st.button("🔄 Refresh Database Cache", width='stretch', key="refresh_cache_btn"):
             st.session_state.isic_df = load_isic_dataframe()
             st.success("Database cache refreshed!")
             log_admin_action(st.session_state.current_user, "refresh_cache")
         
-        if st.button("📊 Update Statistics", use_container_width=True, key="update_stats_btn"):
+        if st.button("📊 Update Statistics", width='stretch', key="update_stats_btn"):
             st.rerun()
     
     with col2:
-        if st.button("🗑️ Clear All Drafts", use_container_width=True, key="clear_drafts_btn"):
+        if st.button("🗑️ Clear All Drafts", width='stretch', key="clear_drafts_btn"):
             if st.checkbox("I understand this will delete all draft interviews", key="confirm_clear_drafts"):
-                if st.button("Confirm Delete All Drafts", key="confirm_delete_drafts_btn"):
+                if st.button("Confirm Delete All Drafts", width='stretch', key="confirm_delete_drafts_btn"):
                     try:
                         result = execute_query("DELETE FROM responses WHERE status = 'draft'")
                         if result:
@@ -2710,7 +2715,7 @@ def database_tools_section():
                     except Exception as e:
                         st.error(f"Error deleting drafts: {str(e)}")
         
-        if st.button("📝 View Admin Logs", use_container_width=True, key="view_logs_btn"):
+        if st.button("📝 View Admin Logs", width='stretch', key="view_logs_btn"):
             display_admin_logs()
 
 def display_admin_logs():
@@ -2775,7 +2780,7 @@ def data_collection_navigation():
     st.sidebar.title("📋 Interview Panel")
     st.sidebar.write(f"Interviewer: **{st.session_state.current_user}**")
     
-    if st.sidebar.button("🚪 Logout", use_container_width=True, key="interviewer_logout_btn"):
+    if st.sidebar.button("🚪 Logout", width='stretch', key="interviewer_logout_btn"):
         logout()
     
     # Quick stats for interviewer
@@ -2894,17 +2899,17 @@ def display_interviewer_data_management():
                 data=csv_data,
                 file_name=f"my_interviews_{st.session_state.current_user}_{datetime.now().strftime('%Y%m%d')}.csv",
                 mime="text/csv",
-                use_container_width=True
+                width='stretch'
             )
         
         with col2:
             st.subheader("Quick Actions")
-            if st.button("🔄 Start New Interview", use_container_width=True):
+            if st.button("🔄 Start New Interview", width='stretch'):
                 reset_interview()
                 st.session_state.current_section = 'A'
                 st.rerun()
             
-            if st.button("📊 View All My Data", use_container_width=True):
+            if st.button("📊 View All My Data", width='stretch'):
                 st.dataframe(user_interviews, use_container_width=True)
     else:
         st.info("No data available for export.")
@@ -2983,7 +2988,7 @@ def display_section_a():
             employees_fulltime = st.number_input("Full-time Employees", min_value=0, value=0, key="employees_fulltime")
             employees_parttime = st.number_input("Part-time Employees", min_value=0, value=0, key="employees_parttime")
         
-        if st.form_submit_button("💾 Save Section A", use_container_width=True):
+        if st.form_submit_button("💾 Save Section A", width='stretch'):
             # Validate required fields
             if not business_name:
                 st.error("❌ Business Name is required!")
@@ -3070,7 +3075,7 @@ def display_section_c():
                                         options=["Worse", "Same", "Better"],
                                         key="climate_rating")
         
-        if st.form_submit_button("💾 Save Section C", use_container_width=True):
+        if st.form_submit_button("💾 Save Section C", width='stretch'):
             # Save section data
             st.session_state.form_data.update({
                 'completion_time_local': local_time,
@@ -3214,9 +3219,9 @@ def display_section_d():
         
         col1, col2 = st.columns(2)
         with col1:
-            save_btn = st.form_submit_button("💾 Save Section D", use_container_width=True)
+            save_btn = st.form_submit_button("💾 Save Section D", width='stretch')
         with col2:
-            submit_btn = st.form_submit_button("🚀 Submit Complete Interview", use_container_width=True)
+            submit_btn = st.form_submit_button("🚀 Submit Complete Interview", width='stretch')
         
         if save_btn:
             st.session_state.form_data['reform_priorities'] = final_reforms
