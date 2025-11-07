@@ -1,5 +1,5 @@
 import streamlit as st
-import sqlite3
+import sqlitecloud
 import pandas as pd
 from datetime import datetime
 import json
@@ -15,10 +15,72 @@ import hashlib
 from interview_editor import interview_editor_main, InterviewEditor
 from analytics_dashboard import analytics_main, create_interactive_dashboard
 
-# Draft Manager Import
+# SQLite Cloud configuration
+SQLITECLOUD_CONFIG = {
+    "connection_string": "sqlitecloud://ctoxm6jkvz.g4.sqlite.cloud:8860/compliance_survey.db?apikey=UoEbilyXxrbfqDUjsrbiLxUZQkRMtyK9fbhIzKVFuAw"
+}
+
+def get_connection():
+    """Get SQLite Cloud database connection"""
+    try:
+        conn = sqlitecloud.connect(SQLITECLOUD_CONFIG["connection_string"])
+        return conn
+    except Exception as e:
+        st.error(f"❌ Database connection error: {str(e)}")
+        return None
+
+def execute_query(query, params=None, return_result=False):
+    """Execute a query on SQLite Cloud"""
+    conn = get_connection()
+    if conn is None:
+        return None
+    
+    try:
+        cursor = conn.cursor()
+        if params:
+            cursor.execute(query, params)
+        else:
+            cursor.execute(query)
+        
+        if return_result:
+            if query.strip().upper().startswith('SELECT'):
+                result = cursor.fetchall()
+                columns = [desc[0] for desc in cursor.description] if cursor.description else []
+                return result, columns
+            else:
+                conn.commit()
+                return cursor.rowcount
+        else:
+            conn.commit()
+            return True
+            
+    except Exception as e:
+        st.error(f"❌ Query execution error: {str(e)}")
+        return None
+    finally:
+        conn.close()
+
+def execute_many(query, params_list):
+    """Execute many queries on SQLite Cloud"""
+    conn = get_connection()
+    if conn is None:
+        return None
+    
+    try:
+        cursor = conn.cursor()
+        cursor.executemany(query, params_list)
+        conn.commit()
+        return True
+    except Exception as e:
+        st.error(f"❌ Batch execution error: {str(e)}")
+        return None
+    finally:
+        conn.close()
+
+# Draft Manager with SQLite Cloud
 class DraftManager:
     def __init__(self):
-        self.conn = sqlite3.connect('compliance_survey.db', check_same_thread=False)
+        pass
     
     def get_user_drafts(self, username):
         """Get all drafts for a specific user"""
@@ -32,8 +94,12 @@ class DraftManager:
             WHERE status = 'draft' AND created_by = ?
             ORDER BY last_modified DESC
             """
-            df = pd.read_sql(query, self.conn, params=(username,))
-            return df
+            result = execute_query(query, (username,), return_result=True)
+            if result and result[0]:
+                result_data, columns = result
+                df = pd.DataFrame(result_data, columns=columns)
+                return df
+            return pd.DataFrame()
         except Exception as e:
             st.error(f"Error loading drafts: {str(e)}")
             return pd.DataFrame()
@@ -50,8 +116,12 @@ class DraftManager:
             WHERE status = 'draft'
             ORDER BY last_modified DESC
             """
-            df = pd.read_sql(query, self.conn)
-            return df
+            result = execute_query(query, return_result=True)
+            if result and result[0]:
+                result_data, columns = result
+                df = pd.DataFrame(result_data, columns=columns)
+                return df
+            return pd.DataFrame()
         except Exception as e:
             st.error(f"Error loading drafts: {str(e)}")
             return pd.DataFrame()
@@ -60,9 +130,11 @@ class DraftManager:
         """Load a specific draft by interview ID"""
         try:
             query = "SELECT * FROM responses WHERE interview_id = ?"
-            df = pd.read_sql(query, self.conn, params=(interview_id,))
-            if not df.empty:
-                return df.iloc[0].to_dict()
+            result = execute_query(query, (interview_id,), return_result=True)
+            if result and result[0]:
+                result_data, columns = result
+                # Convert to dictionary
+                return dict(zip(columns, result_data[0]))
             return None
         except Exception as e:
             st.error(f"Error loading draft: {str(e)}")
@@ -71,14 +143,13 @@ class DraftManager:
     def update_draft_progress(self, interview_id, current_section, progress_percentage):
         """Update draft progress and current section"""
         try:
-            cursor = self.conn.cursor()
-            cursor.execute('''
+            query = '''
                 UPDATE responses 
                 SET current_section = ?, draft_progress = ?, last_modified = ?
                 WHERE interview_id = ?
-            ''', (current_section, progress_percentage, datetime.now().isoformat(), interview_id))
-            self.conn.commit()
-            return True
+            '''
+            result = execute_query(query, (current_section, progress_percentage, datetime.now().isoformat(), interview_id))
+            return result is not None
         except Exception as e:
             st.error(f"Error updating draft progress: {str(e)}")
             return False
@@ -86,10 +157,9 @@ class DraftManager:
     def delete_draft(self, interview_id):
         """Delete a draft interview"""
         try:
-            cursor = self.conn.cursor()
-            cursor.execute("DELETE FROM responses WHERE interview_id = ? AND status = 'draft'", (interview_id,))
-            self.conn.commit()
-            return True
+            query = "DELETE FROM responses WHERE interview_id = ? AND status = 'draft'"
+            result = execute_query(query, (interview_id,))
+            return result is not None
         except Exception as e:
             st.error(f"Error deleting draft: {str(e)}")
             return False
@@ -360,142 +430,147 @@ ADMIN_CREDENTIALS = {
 
 # Initialize database with enhanced schema
 def init_db():
-    conn = sqlite3.connect('compliance_survey.db')
-    c = conn.cursor()
+    """Initialize database tables in SQLite Cloud"""
+    conn = get_connection()
+    if conn is None:
+        return
     
-    # Main responses table - FIXED: 43 columns total
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS responses (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            interview_id TEXT UNIQUE,
-            interviewer_name TEXT,
-            interview_date TEXT,
-            start_time TEXT,
-            end_time TEXT,
-            business_name TEXT,
-            district TEXT,
-            physical_address TEXT,
-            contact_person TEXT,
-            email TEXT,
-            phone TEXT,
-            primary_sector TEXT,
-            legal_status TEXT,
-            business_size TEXT,
-            ownership_structure TEXT,
-            gender_owner TEXT,
-            business_activities TEXT,
-            isic_codes TEXT,
-            year_established INTEGER,
-            turnover_range TEXT,
-            employees_fulltime INTEGER,
-            employees_parttime INTEGER,
-            procedure_data TEXT,
-            completion_time_local REAL,
-            completion_time_national REAL,
-            completion_time_dk REAL,
-            compliance_cost_percentage REAL,
-            permit_comparison_national INTEGER,
-            permit_comparison_local INTEGER,
-            cost_comparison_national INTEGER,
-            cost_comparison_local INTEGER,
-            business_climate_rating INTEGER,
-            reform_priorities TEXT,
-            status TEXT DEFAULT 'draft',
-            submission_date TIMESTAMP,
-            last_modified TIMESTAMP,
-            total_compliance_cost REAL DEFAULT 0,
-            total_compliance_time INTEGER DEFAULT 0,
-            risk_score REAL DEFAULT 0,
-            created_by TEXT,
-            current_section TEXT DEFAULT 'A',
-            draft_progress REAL DEFAULT 0
-        )
-    ''')
-    
-    # ISIC codes cache table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS isic_cache (
-            code TEXT PRIMARY KEY,
-            title TEXT,
-            description TEXT,
-            category TEXT,
-            last_updated TIMESTAMP
-        )
-    ''')
-    
-    # Templates table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS templates (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE,
-            sector TEXT,
-            business_size TEXT,
-            data TEXT,
-            created_date TIMESTAMP
-        )
-    ''')
-    
-    # Admin logs table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS admin_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT,
-            action TEXT,
-            timestamp TIMESTAMP,
-            details TEXT
-        )
-    ''')
-    
-    # User sessions table
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS user_sessions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT,
-            login_time TIMESTAMP,
-            logout_time TIMESTAMP,
-            session_duration INTEGER
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
+    try:
+        c = conn.cursor()
+        
+        # Main responses table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS responses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                interview_id TEXT UNIQUE,
+                interviewer_name TEXT,
+                interview_date TEXT,
+                start_time TEXT,
+                end_time TEXT,
+                business_name TEXT,
+                district TEXT,
+                physical_address TEXT,
+                contact_person TEXT,
+                email TEXT,
+                phone TEXT,
+                primary_sector TEXT,
+                legal_status TEXT,
+                business_size TEXT,
+                ownership_structure TEXT,
+                gender_owner TEXT,
+                business_activities TEXT,
+                isic_codes TEXT,
+                year_established INTEGER,
+                turnover_range TEXT,
+                employees_fulltime INTEGER,
+                employees_parttime INTEGER,
+                procedure_data TEXT,
+                completion_time_local REAL,
+                completion_time_national REAL,
+                completion_time_dk REAL,
+                compliance_cost_percentage REAL,
+                permit_comparison_national INTEGER,
+                permit_comparison_local INTEGER,
+                cost_comparison_national INTEGER,
+                cost_comparison_local INTEGER,
+                business_climate_rating INTEGER,
+                reform_priorities TEXT,
+                status TEXT DEFAULT 'draft',
+                submission_date TIMESTAMP,
+                last_modified TIMESTAMP,
+                total_compliance_cost REAL DEFAULT 0,
+                total_compliance_time INTEGER DEFAULT 0,
+                risk_score REAL DEFAULT 0,
+                created_by TEXT,
+                current_section TEXT DEFAULT 'A',
+                draft_progress REAL DEFAULT 0
+            )
+        ''')
+        
+        # ISIC codes cache table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS isic_cache (
+                code TEXT PRIMARY KEY,
+                title TEXT,
+                description TEXT,
+                category TEXT,
+                last_updated TIMESTAMP
+            )
+        ''')
+        
+        # Templates table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE,
+                sector TEXT,
+                business_size TEXT,
+                data TEXT,
+                created_date TIMESTAMP
+            )
+        ''')
+        
+        # Admin logs table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS admin_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT,
+                action TEXT,
+                timestamp TIMESTAMP,
+                details TEXT
+            )
+        ''')
+        
+        # User sessions table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT,
+                login_time TIMESTAMP,
+                logout_time TIMESTAMP,
+                session_duration INTEGER
+            )
+        ''')
+        
+        conn.commit()
+        st.success("✅ Database tables initialized successfully!")
+        
+    except Exception as e:
+        st.error(f"❌ Database initialization error: {str(e)}")
+    finally:
+        conn.close()
 
 def add_missing_columns():
     """Add missing columns to existing database tables"""
-    conn = sqlite3.connect('compliance_survey.db')
-    c = conn.cursor()
-    
     try:
         # Check if created_by column exists in responses table
-        c.execute("PRAGMA table_info(responses)")
-        columns = [column[1] for column in c.fetchall()]
-        
-        missing_columns = []
-        
-        if 'created_by' not in columns:
-            missing_columns.append('created_by')
-        if 'current_section' not in columns:
-            missing_columns.append('current_section')
-        if 'draft_progress' not in columns:
-            missing_columns.append('draft_progress')
-        
-        if missing_columns:
-            st.info("🔄 Updating database schema...")
-            for column in missing_columns:
-                if column == 'created_by':
-                    c.execute("ALTER TABLE responses ADD COLUMN created_by TEXT")
-                elif column == 'current_section':
-                    c.execute("ALTER TABLE responses ADD COLUMN current_section TEXT DEFAULT 'A'")
-                elif column == 'draft_progress':
-                    c.execute("ALTER TABLE responses ADD COLUMN draft_progress REAL DEFAULT 0")
+        result = execute_query("PRAGMA table_info(responses)", return_result=True)
+        if result and result[0]:
+            columns = [column[1] for column in result[0]]
             
-            conn.commit()
-            st.success("✅ Database schema updated successfully!")
+            missing_columns = []
             
+            if 'created_by' not in columns:
+                missing_columns.append('created_by')
+            if 'current_section' not in columns:
+                missing_columns.append('current_section')
+            if 'draft_progress' not in columns:
+                missing_columns.append('draft_progress')
+            
+            if missing_columns:
+                st.info("🔄 Updating database schema...")
+                for column in missing_columns:
+                    if column == 'created_by':
+                        execute_query("ALTER TABLE responses ADD COLUMN created_by TEXT")
+                    elif column == 'current_section':
+                        execute_query("ALTER TABLE responses ADD COLUMN current_section TEXT DEFAULT 'A'")
+                    elif column == 'draft_progress':
+                        execute_query("ALTER TABLE responses ADD COLUMN draft_progress REAL DEFAULT 0")
+                
+                st.success("✅ Database schema updated successfully!")
+                
     except Exception as e:
         st.warning(f"Database schema update: {str(e)}")
-    
-    conn.close()
 
 # Enhanced ISIC data management
 @st.cache_data
@@ -529,12 +604,11 @@ def load_isic_dataframe():
 def cache_isic_data(df):
     """Cache ISIC data in database for faster access"""
     try:
-        conn = sqlite3.connect('compliance_survey.db')
-        
         # Clear existing cache
-        conn.execute("DELETE FROM isic_cache")
+        execute_query("DELETE FROM isic_cache")
         
         # Insert new data
+        params_list = []
         for _, row in df.iterrows():
             code_col = next((col for col in ['Code', 'CODE', 'code'] if col in df.columns), None)
             title_col = next((col for col in ['Title', 'TITLE', 'title'] if col in df.columns), None)
@@ -545,30 +619,33 @@ def cache_isic_data(df):
                 description = title
                 
                 if code:
-                    # Use string conversion for datetime to avoid deprecation warning
                     current_time = datetime.now().isoformat()
-                    conn.execute(
-                        "INSERT INTO isic_cache (code, title, description, category, last_updated) VALUES (?, ?, ?, ?, ?)",
-                        (code, title, description, 'General', current_time)
-                    )
+                    params_list.append((code, title, description, 'General', current_time))
         
-        conn.commit()
-        conn.close()
+        if params_list:
+            execute_many(
+                "INSERT INTO isic_cache (code, title, description, category, last_updated) VALUES (?, ?, ?, ?, ?)",
+                params_list
+            )
+            
     except Exception as e:
         st.warning(f"Could not cache ISIC data: {str(e)}")
 
 def load_isic_from_cache():
     """Load ISIC data from database cache"""
     try:
-        conn = sqlite3.connect('compliance_survey.db')
-        df = pd.read_sql("SELECT code, title, description FROM isic_cache", conn)
-        conn.close()
-        
-        if not df.empty:
-            st.info("📁 Loaded ISIC data from cache")
-            return df
+        result = execute_query("SELECT code, title, description FROM isic_cache", return_result=True)
+        if result and result[0]:
+            result_data, columns = result
+            df = pd.DataFrame(result_data, columns=columns)
+            
+            if not df.empty:
+                st.info("📁 Loaded ISIC data from cache")
+                return df
+            else:
+                st.warning("No ISIC data available. Using basic codes.")
+                return create_basic_isic_data()
         else:
-            st.warning("No ISIC data available. Using basic codes.")
             return create_basic_isic_data()
     except:
         return create_basic_isic_data()
@@ -688,13 +765,10 @@ def initialize_session_state():
         if key not in st.session_state:
             st.session_state[key] = value
 
-# Database functions - FIXED VERSION
+# Database functions - SQLite Cloud VERSION
 def save_draft(data, interview_id=None):
     """Save form data as draft with enhanced calculations and progress tracking"""
     try:
-        conn = sqlite3.connect('compliance_survey.db')
-        c = conn.cursor()
-        
         if not interview_id:
             interview_id = generate_interview_id()
         
@@ -710,21 +784,19 @@ def save_draft(data, interview_id=None):
         draft_manager = DraftManager()
         progress = draft_manager.calculate_progress(data, st.session_state.current_section)
         
-        # Check if record exists
-        c.execute("SELECT id FROM responses WHERE interview_id = ?", (interview_id,))
-        existing = c.fetchone()
-        
         # Prepare data for insertion
         isic_codes = data.get('isic_codes', [])
         reform_priorities = data.get('reform_priorities', [])
         procedure_data_json = json.dumps(procedure_data)
         
-        # Use string conversion for datetime to avoid deprecation warning
         current_time = datetime.now().isoformat()
         
-        if existing:
-            # Update existing draft - FIXED: All 43 columns
-            c.execute('''
+        # Check if record exists
+        existing_result = execute_query("SELECT id FROM responses WHERE interview_id = ?", (interview_id,), return_result=True)
+        
+        if existing_result and existing_result[0]:
+            # Update existing draft
+            update_query = '''
                 UPDATE responses SET
                     interviewer_name=?, interview_date=?, start_time=?, end_time=?,
                     business_name=?, district=?, physical_address=?, contact_person=?,
@@ -740,7 +812,8 @@ def save_draft(data, interview_id=None):
                     total_compliance_time=?, risk_score=?, created_by=?,
                     current_section=?, draft_progress=?
                 WHERE interview_id=?
-            ''', (
+            '''
+            params = (
                 data.get('interviewer_name', ''),
                 data.get('interview_date', ''),
                 data.get('start_time', ''),
@@ -781,9 +854,15 @@ def save_draft(data, interview_id=None):
                 st.session_state.current_section,
                 progress,
                 interview_id
-            ))
+            )
+            result = execute_query(update_query, params)
         else:
-            # Insert new draft - FIXED: 43 values for 43 columns
+            # Insert new draft
+            insert_query = '''
+                INSERT INTO responses VALUES (
+                    NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
+            '''
             insert_data = (
                 interview_id,
                 data.get('interviewer_name', ''),
@@ -828,21 +907,14 @@ def save_draft(data, interview_id=None):
                 st.session_state.current_section,
                 progress
             )
-            
-            # FIXED INSERT STATEMENT - 43 values for 43 columns
-            c.execute('''
-                INSERT INTO responses VALUES (
-                    NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-                )
-            ''', insert_data)
+            result = execute_query(insert_query, insert_data)
         
-        conn.commit()
-        conn.close()
+        if result:
+            # Auto-save draft progress
+            auto_save_draft()
+            return interview_id
+        return None
         
-        # Auto-save draft progress
-        auto_save_draft()
-        
-        return interview_id
     except Exception as e:
         st.error(f"Error saving draft: {str(e)}")
         import traceback
@@ -852,20 +924,18 @@ def save_draft(data, interview_id=None):
 def check_duplicate_business_name(business_name, current_interview_id=None):
     """Check if business name already exists in database"""
     try:
-        conn = sqlite3.connect('compliance_survey.db')
-        c = conn.cursor()
-        
         if current_interview_id:
             # Check for duplicates excluding current interview
-            c.execute("SELECT COUNT(*) FROM responses WHERE business_name = ? AND interview_id != ?", 
-                     (business_name, current_interview_id))
+            result = execute_query("SELECT COUNT(*) FROM responses WHERE business_name = ? AND interview_id != ?", 
+                                 (business_name, current_interview_id), return_result=True)
         else:
             # Check for any duplicates
-            c.execute("SELECT COUNT(*) FROM responses WHERE business_name = ?", (business_name,))
+            result = execute_query("SELECT COUNT(*) FROM responses WHERE business_name = ?", (business_name,), return_result=True)
         
-        count = c.fetchone()[0]
-        conn.close()
-        return count > 0
+        if result and result[0]:
+            count = result[0][0][0]
+            return count > 0
+        return False
     except Exception as e:
         st.error(f"Error checking duplicate business name: {str(e)}")
         return False
@@ -879,21 +949,15 @@ def submit_final(interview_id):
             st.error(f"❌ Business name '{business_name}' already exists in the database. Please use a unique business name.")
             return False
         
-        conn = sqlite3.connect('compliance_survey.db')
-        c = conn.cursor()
-        
-        # Use string conversion for datetime to avoid deprecation warning
         current_time = datetime.now().isoformat()
-        c.execute("UPDATE responses SET status = 'submitted', submission_date = ? WHERE interview_id = ?", 
-                  (current_time, interview_id))
+        result = execute_query("UPDATE responses SET status = 'submitted', submission_date = ? WHERE interview_id = ?", 
+                              (current_time, interview_id))
         
-        conn.commit()
-        conn.close()
-        
-        # Log the submission
-        log_admin_action(st.session_state.current_user, "interview_submitted", f"Interview {interview_id} submitted")
-        
-        return True
+        if result:
+            # Log the submission
+            log_admin_action(st.session_state.current_user, "interview_submitted", f"Interview {interview_id} submitted")
+            return True
+        return False
     except Exception as e:
         st.error(f"Error submitting final: {str(e)}")
         return False
@@ -905,36 +969,37 @@ def generate_interview_id():
 def get_all_interviews():
     """Get all interviews from database"""
     try:
-        conn = sqlite3.connect('compliance_survey.db')
-        
         # First check if created_by column exists
-        c = conn.cursor()
-        c.execute("PRAGMA table_info(responses)")
-        columns = [column[1] for column in c.fetchall()]
-        
-        if 'created_by' in columns:
-            query = """
-            SELECT 
-                interview_id, business_name, district, primary_sector, 
-                business_size, status, submission_date, last_modified,
-                total_compliance_cost, total_compliance_time, risk_score, created_by
-            FROM responses 
-            ORDER BY last_modified DESC
-            """
-        else:
-            # Fallback query without created_by column
-            query = """
-            SELECT 
-                interview_id, business_name, district, primary_sector, 
-                business_size, status, submission_date, last_modified,
-                total_compliance_cost, total_compliance_time, risk_score
-            FROM responses 
-            ORDER BY last_modified DESC
-            """
-        
-        df = pd.read_sql(query, conn)
-        conn.close()
-        return df
+        result = execute_query("PRAGMA table_info(responses)", return_result=True)
+        if result and result[0]:
+            columns = [column[1] for column in result[0]]
+            
+            if 'created_by' in columns:
+                query = """
+                SELECT 
+                    interview_id, business_name, district, primary_sector, 
+                    business_size, status, submission_date, last_modified,
+                    total_compliance_cost, total_compliance_time, risk_score, created_by
+                FROM responses 
+                ORDER BY last_modified DESC
+                """
+            else:
+                # Fallback query without created_by column
+                query = """
+                SELECT 
+                    interview_id, business_name, district, primary_sector, 
+                    business_size, status, submission_date, last_modified,
+                    total_compliance_cost, total_compliance_time, risk_score
+                FROM responses 
+                ORDER BY last_modified DESC
+                """
+            
+            result = execute_query(query, return_result=True)
+            if result and result[0]:
+                result_data, columns = result
+                df = pd.DataFrame(result_data, columns=columns)
+                return df
+        return pd.DataFrame()
     except Exception as e:
         st.error(f"Error loading interviews: {str(e)}")
         return pd.DataFrame()
@@ -942,38 +1007,39 @@ def get_all_interviews():
 def get_user_interviews(username):
     """Get interviews created by specific user"""
     try:
-        conn = sqlite3.connect('compliance_survey.db')
-        
         # Check if created_by column exists
-        c = conn.cursor()
-        c.execute("PRAGMA table_info(responses)")
-        columns = [column[1] for column in c.fetchall()]
-        
-        if 'created_by' in columns:
-            query = """
-            SELECT 
-                interview_id, business_name, district, primary_sector, 
-                business_size, status, submission_date, last_modified,
-                total_compliance_cost, total_compliance_time, risk_score
-            FROM responses 
-            WHERE created_by = ?
-            ORDER BY last_modified DESC
-            """
-            df = pd.read_sql(query, conn, params=(username,))
-        else:
-            # If created_by column doesn't exist, return all interviews for now
-            query = """
-            SELECT 
-                interview_id, business_name, district, primary_sector, 
-                business_size, status, submission_date, last_modified,
-                total_compliance_cost, total_compliance_time, risk_score
-            FROM responses 
-            ORDER BY last_modified DESC
-            """
-            df = pd.read_sql(query, conn)
-        
-        conn.close()
-        return df
+        result = execute_query("PRAGMA table_info(responses)", return_result=True)
+        if result and result[0]:
+            columns = [column[1] for column in result[0]]
+            
+            if 'created_by' in columns:
+                query = """
+                SELECT 
+                    interview_id, business_name, district, primary_sector, 
+                    business_size, status, submission_date, last_modified,
+                    total_compliance_cost, total_compliance_time, risk_score
+                FROM responses 
+                WHERE created_by = ?
+                ORDER BY last_modified DESC
+                """
+                result = execute_query(query, (username,), return_result=True)
+            else:
+                # If created_by column doesn't exist, return all interviews for now
+                query = """
+                SELECT 
+                    interview_id, business_name, district, primary_sector, 
+                    business_size, status, submission_date, last_modified,
+                    total_compliance_cost, total_compliance_time, risk_score
+                FROM responses 
+                ORDER BY last_modified DESC
+                """
+                result = execute_query(query, return_result=True)
+            
+            if result and result[0]:
+                result_data, columns = result
+                df = pd.DataFrame(result_data, columns=columns)
+                return df
+        return pd.DataFrame()
     except Exception as e:
         st.error(f"Error loading user interviews: {str(e)}")
         return pd.DataFrame()
@@ -981,11 +1047,13 @@ def get_user_interviews(username):
 def get_interview_details(interview_id):
     """Get detailed interview data"""
     try:
-        conn = sqlite3.connect('compliance_survey.db')
         query = "SELECT * FROM responses WHERE interview_id = ?"
-        df = pd.read_sql(query, conn, params=(interview_id,))
-        conn.close()
-        return df
+        result = execute_query(query, (interview_id,), return_result=True)
+        if result and result[0]:
+            result_data, columns = result
+            df = pd.DataFrame(result_data, columns=columns)
+            return df
+        return pd.DataFrame()
     except Exception as e:
         st.error(f"Error loading interview details: {str(e)}")
         return pd.DataFrame()
@@ -993,47 +1061,68 @@ def get_interview_details(interview_id):
 def get_database_stats():
     """Get database statistics"""
     try:
-        conn = sqlite3.connect('compliance_survey.db')
-        
         stats = {}
         
         # Total interviews
-        stats['total_interviews'] = pd.read_sql("SELECT COUNT(*) as count FROM responses", conn).iloc[0]['count']
-        stats['submitted_interviews'] = pd.read_sql("SELECT COUNT(*) as count FROM responses WHERE status = 'submitted'", conn).iloc[0]['count']
-        stats['draft_interviews'] = pd.read_sql("SELECT COUNT(*) as count FROM responses WHERE status = 'draft'", conn).iloc[0]['count']
+        result = execute_query("SELECT COUNT(*) as count FROM responses", return_result=True)
+        if result and result[0]:
+            stats['total_interviews'] = result[0][0][0]
+        
+        result = execute_query("SELECT COUNT(*) as count FROM responses WHERE status = 'submitted'", return_result=True)
+        if result and result[0]:
+            stats['submitted_interviews'] = result[0][0][0]
+        
+        result = execute_query("SELECT COUNT(*) as count FROM responses WHERE status = 'draft'", return_result=True)
+        if result and result[0]:
+            stats['draft_interviews'] = result[0][0][0]
         
         # User-specific stats
         if st.session_state.user_role == 'interviewer' and st.session_state.current_user:
-            # Check if created_by column exists
-            c = conn.cursor()
-            c.execute("PRAGMA table_info(responses)")
-            columns = [column[1] for column in c.fetchall()]
-            
-            if 'created_by' in columns:
-                stats['user_interviews'] = pd.read_sql("SELECT COUNT(*) as count FROM responses WHERE created_by = ?", conn, params=(st.session_state.current_user,)).iloc[0]['count']
+            result = execute_query("SELECT COUNT(*) as count FROM responses WHERE created_by = ?", (st.session_state.current_user,), return_result=True)
+            if result and result[0]:
+                stats['user_interviews'] = result[0][0][0]
             else:
                 stats['user_interviews'] = 0
         
         # Sector distribution
-        stats['sector_dist'] = pd.read_sql("SELECT primary_sector, COUNT(*) as count FROM responses GROUP BY primary_sector", conn)
+        result = execute_query("SELECT primary_sector, COUNT(*) as count FROM responses GROUP BY primary_sector", return_result=True)
+        if result and result[0]:
+            result_data, columns = result
+            stats['sector_dist'] = pd.DataFrame(result_data, columns=columns)
+        else:
+            stats['sector_dist'] = pd.DataFrame()
         
         # District distribution
-        stats['district_dist'] = pd.read_sql("SELECT district, COUNT(*) as count FROM responses GROUP BY district", conn)
+        result = execute_query("SELECT district, COUNT(*) as count FROM responses GROUP BY district", return_result=True)
+        if result and result[0]:
+            result_data, columns = result
+            stats['district_dist'] = pd.DataFrame(result_data, columns=columns)
+        else:
+            stats['district_dist'] = pd.DataFrame()
         
         # Business size distribution
-        stats['size_dist'] = pd.read_sql("SELECT business_size, COUNT(*) as count FROM responses GROUP BY business_size", conn)
+        result = execute_query("SELECT business_size, COUNT(*) as count FROM responses GROUP BY business_size", return_result=True)
+        if result and result[0]:
+            result_data, columns = result
+            stats['size_dist'] = pd.DataFrame(result_data, columns=columns)
+        else:
+            stats['size_dist'] = pd.DataFrame()
         
         # Average compliance metrics
-        stats['avg_metrics'] = pd.read_sql("""
+        result = execute_query("""
             SELECT 
                 AVG(total_compliance_cost) as avg_cost,
                 AVG(total_compliance_time) as avg_time,
                 AVG(risk_score) as avg_risk
             FROM responses 
             WHERE status = 'submitted'
-        """, conn)
+        """, return_result=True)
+        if result and result[0]:
+            result_data, columns = result
+            stats['avg_metrics'] = pd.DataFrame(result_data, columns=columns)
+        else:
+            stats['avg_metrics'] = pd.DataFrame()
         
-        conn.close()
         return stats
     except Exception as e:
         st.error(f"Error loading statistics: {str(e)}")
@@ -1061,33 +1150,29 @@ def add_quick_edit_options():
 def log_admin_action(username, action, details=""):
     """Log admin actions"""
     try:
-        conn = sqlite3.connect('compliance_survey.db')
-        # Use string conversion for datetime to avoid deprecation warning
         current_time = datetime.now().isoformat()
-        conn.execute(
+        result = execute_query(
             "INSERT INTO admin_logs (username, action, timestamp, details) VALUES (?, ?, ?, ?)",
             (username, action, current_time, details)
         )
-        conn.commit()
-        conn.close()
+        return result is not None
     except Exception as e:
         st.error(f"Error logging admin action: {str(e)}")
+        return False
 
 def log_user_session(username, login_time, logout_time=None, duration=None):
     """Log user session information"""
     try:
-        conn = sqlite3.connect('compliance_survey.db')
-        current_time = datetime.now().isoformat()
-        conn.execute(
+        result = execute_query(
             "INSERT INTO user_sessions (username, login_time, logout_time, session_duration) VALUES (?, ?, ?, ?)",
             (username, login_time, logout_time, duration)
         )
-        conn.commit()
-        conn.close()
+        return result is not None
     except Exception as e:
         st.error(f"Error logging user session: {str(e)}")
+        return False
 
-# Enhanced Business Activities with ISIC Integration - FIXED VERSION
+# Enhanced Business Activities with ISIC Integration
 def business_activities_section():
     """Enhanced business activities section with ISIC integration"""
     
@@ -1116,7 +1201,7 @@ def business_activities_section():
     # ISIC Code Selection Section
     st.subheader("📊 ISIC Code Classification")
     
-    # Enhanced ISIC search and selection - FIXED: Auto-search on input
+    # Enhanced ISIC search and selection
     search_term = st.text_input(
         "🔍 Search ISIC codes by code or description:",
         placeholder="e.g., agriculture, construction, 0111, manufacturing",
@@ -1127,7 +1212,6 @@ def business_activities_section():
     # Update search term in session state
     if search_term != st.session_state.isic_search_term:
         st.session_state.isic_search_term = search_term
-        # Don't rerun here to avoid constant refreshing
     
     # Display search results automatically when there's a search term
     if st.session_state.isic_search_term and st.session_state.isic_df is not None:
@@ -1645,7 +1729,7 @@ def add_license_from_template(license_name, license_data, template_data):
     
     st.session_state.procedures_list.append(procedure)
 
-# Single Procedure Capture - FIXED VERSION with working external support
+# Single Procedure Capture
 def single_procedure_capture():
     """Single procedure detailed capture"""
     
@@ -1702,7 +1786,7 @@ def single_procedure_capture():
             travel_costs = st.number_input("Travel & Incidentals (ZMW)", min_value=0.0, value=0.0,
                                          key="travel_costs_single")
         
-        # External Support - FIXED: Working conditional fields
+        # External Support
         st.write("**🛠️ External Support**")
         support_col1, support_col2, support_col3 = st.columns(3)
         
@@ -1807,7 +1891,7 @@ def single_procedure_capture():
             else:
                 st.error("Please fill in required fields (Procedure Name and Regulatory Body)")
 
-# FIXED: Interactive Procedures Manager
+# Interactive Procedures Manager
 def interactive_procedures_manager():
     """Manage procedures with enhanced editing"""
     
@@ -2169,8 +2253,30 @@ def logout():
     st.success("Logged out successfully!")
     st.rerun()
 
+# Test the connection
+def test_connection():
+    """Test SQLite Cloud connection"""
+    try:
+        conn = get_connection()
+        if conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+            result = cursor.fetchone()
+            conn.close()
+            st.success("✅ Successfully connected to SQLite Cloud!")
+            return True
+        return False
+    except Exception as e:
+        st.error(f"❌ Failed to connect to SQLite Cloud: {str(e)}")
+        return False
+
 # Enhanced Main Application
 def main():
+    # Test database connection first
+    if not test_connection():
+        st.error("Cannot proceed without database connection")
+        return
+    
     initialize_session_state()
     
     # Load ISIC data if not loaded
@@ -2217,7 +2323,7 @@ def admin_navigation():
         admin_dashboard()
     elif selected_menu == 'Data Management':
         display_all_interviews()
-    elif selected_menu == 'Edit_Interviews':  # NEW OPTION
+    elif selected_menu == 'Edit_Interviews':
         interview_editor_main()
     elif selected_menu == 'Analytics':
         analytics_main()
@@ -2266,8 +2372,6 @@ def admin_dashboard():
                                     title="Interviews by District", color='district')
                 st.plotly_chart(fig_district, use_container_width=True)
   
-    # In admin_dashboard() function, add:
-    add_quick_edit_options()
     # Data Management
     st.header("💾 Data Management")
     
@@ -2312,7 +2416,7 @@ def display_all_interviews():
     else:
         st.info("No interviews found in the database.")
     
-    # CORRECT PLACEMENT - Add quick edit options AFTER the main content
+    # Add quick edit options
     add_quick_edit_options()
     
 def search_and_filter_interviews():
@@ -2433,8 +2537,7 @@ def user_management_section():
         
         # User interview counts
         try:
-            conn = sqlite3.connect('compliance_survey.db')
-            user_stats = pd.read_sql("""
+            result = execute_query("""
                 SELECT created_by, 
                        COUNT(*) as total_interviews,
                        SUM(CASE WHEN status = 'submitted' THEN 1 ELSE 0 END) as submitted,
@@ -2442,16 +2545,21 @@ def user_management_section():
                 FROM responses 
                 GROUP BY created_by
                 ORDER BY total_interviews DESC
-            """, conn)
-            conn.close()
+            """, return_result=True)
             
-            if not user_stats.empty:
-                st.dataframe(user_stats, use_container_width=True)
+            if result and result[0]:
+                result_data, columns = result
+                user_stats = pd.DataFrame(result_data, columns=columns)
                 
-                # Visualization
-                fig = px.bar(user_stats, x='created_by', y='total_interviews', 
-                           title="Interviews by User", color='created_by')
-                st.plotly_chart(fig, use_container_width=True)
+                if not user_stats.empty:
+                    st.dataframe(user_stats, use_container_width=True)
+                    
+                    # Visualization
+                    fig = px.bar(user_stats, x='created_by', y='total_interviews', 
+                               title="Interviews by User", color='created_by')
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No user statistics available yet.")
             else:
                 st.info("No user statistics available yet.")
         except Exception as e:
@@ -2468,11 +2576,10 @@ def user_management_section():
 def display_user_sessions():
     """Display user session logs"""
     try:
-        conn = sqlite3.connect('compliance_survey.db')
-        sessions_df = pd.read_sql("SELECT * FROM user_sessions ORDER BY login_time DESC LIMIT 100", conn)
-        conn.close()
-        
-        if not sessions_df.empty:
+        result = execute_query("SELECT * FROM user_sessions ORDER BY login_time DESC LIMIT 100", return_result=True)
+        if result and result[0]:
+            result_data, columns = result
+            sessions_df = pd.DataFrame(result_data, columns=columns)
             st.dataframe(sessions_df, use_container_width=True)
         else:
             st.info("No session logs found.")
@@ -2499,13 +2606,13 @@ def database_tools_section():
             if st.checkbox("I understand this will delete all draft interviews", key="confirm_clear_drafts"):
                 if st.button("Confirm Delete All Drafts", key="confirm_delete_drafts_btn"):
                     try:
-                        conn = sqlite3.connect('compliance_survey.db')
-                        conn.execute("DELETE FROM responses WHERE status = 'draft'")
-                        conn.commit()
-                        conn.close()
-                        st.success("All draft interviews deleted!")
-                        log_admin_action(st.session_state.current_user, "clear_drafts")
-                        st.rerun()
+                        result = execute_query("DELETE FROM responses WHERE status = 'draft'")
+                        if result:
+                            st.success("All draft interviews deleted!")
+                            log_admin_action(st.session_state.current_user, "clear_drafts")
+                            st.rerun()
+                        else:
+                            st.error("Failed to delete drafts")
                     except Exception as e:
                         st.error(f"Error deleting drafts: {str(e)}")
         
@@ -2515,11 +2622,10 @@ def database_tools_section():
 def display_admin_logs():
     """Display admin action logs"""
     try:
-        conn = sqlite3.connect('compliance_survey.db')
-        logs_df = pd.read_sql("SELECT * FROM admin_logs ORDER BY timestamp DESC LIMIT 100", conn)
-        conn.close()
-        
-        if not logs_df.empty:
+        result = execute_query("SELECT * FROM admin_logs ORDER BY timestamp DESC LIMIT 100", return_result=True)
+        if result and result[0]:
+            result_data, columns = result
+            logs_df = pd.DataFrame(result_data, columns=columns)
             st.subheader("📝 Admin Action Logs")
             st.dataframe(logs_df, use_container_width=True)
         else:
