@@ -1,6 +1,3 @@
-Here's the complete fixed `app.py` file with proper database handling that will store information safely:
-
-```python
 import streamlit as st
 import sqlitecloud
 import pandas as pd
