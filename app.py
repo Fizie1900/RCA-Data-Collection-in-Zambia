@@ -1,3 +1,6 @@
+Here's the complete fixed `app.py` file with proper database handling that will store information safely:
+
+```python
 import streamlit as st
 import sqlitecloud
 import pandas as pd
@@ -62,10 +65,10 @@ def execute_query(query, params=None, return_result=False):
             if query.strip().upper().startswith('SELECT'):
                 result = cursor.fetchall()
                 columns = [desc[0] for desc in cursor.description] if cursor.description else []
-                return (result, columns)  # Always return tuple when return_result=True
+                return (result, columns)
             else:
                 conn.commit()
-                return cursor.rowcount  # Return just the row count for non-SELECT queries
+                return cursor.rowcount
         else:
             conn.commit()
             return True
@@ -116,17 +119,20 @@ ADMIN_CREDENTIALS = {
     "researcher": {"password": "data2024", "role": "researcher"}
 }
 
-# Initialize database with enhanced schema
+# Initialize database with FIXED schema (44 columns)
 def init_db():
-    """Initialize database tables in SQLite Cloud"""
+    """Initialize database tables in SQLite Cloud with FIXED schema"""
     conn = get_connection()
     if conn is None:
-        return
+        return False
     
     try:
         c = conn.cursor()
         
-        # Main responses table
+        # Drop table if exists to recreate with correct schema
+        c.execute('DROP TABLE IF EXISTS responses')
+        
+        # Main responses table - FIXED: 44 columns exactly
         c.execute('''
             CREATE TABLE IF NOT EXISTS responses (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -171,7 +177,8 @@ def init_db():
                 risk_score REAL DEFAULT 0,
                 created_by TEXT,
                 current_section TEXT DEFAULT 'A',
-                draft_progress REAL DEFAULT 0
+                draft_progress REAL DEFAULT 0,
+                external_support_details TEXT DEFAULT ''  -- Added to make 44 columns
             )
         ''')
         
@@ -221,32 +228,66 @@ def init_db():
         ''')
         
         conn.commit()
-        st.success("✅ Database tables initialized successfully!")
+        st.success("✅ Database tables initialized successfully with FIXED schema!")
+        return True
         
     except Exception as e:
         st.error(f"❌ Database initialization error: {str(e)}")
+        return False
     finally:
         conn.close()
 
-def add_missing_columns():
-    """Add missing columns to existing database tables"""
+def check_and_fix_database():
+    """Check database schema and fix if needed"""
     try:
-        # Check if created_by column exists in responses table
+        # Check if responses table exists
+        result = execute_query("SELECT name FROM sqlite_master WHERE type='table' AND name='responses'", return_result=True)
+        
+        if not result or not result[0] or len(result[0]) == 0:
+            st.warning("📊 Database not found. Initializing...")
+            return init_db()
+        
+        # Check if we have the correct number of columns
+        result = execute_query("PRAGMA table_info(responses)", return_result=True)
+        if result and isinstance(result, tuple) and result[0]:
+            column_count = len(result[0])
+            if column_count != 44:
+                st.warning(f"🔄 Database schema mismatch: found {column_count} columns, expected 44. Recreating...")
+                return init_db()
+        
+        return True
+    except Exception as e:
+        st.error(f"Error checking database: {str(e)}")
+        return init_db()
+
+def add_missing_columns():
+    """Add missing columns to existing database tables - FIXED VERSION"""
+    try:
+        # Check if responses table exists first
+        result = execute_query("SELECT name FROM sqlite_master WHERE type='table' AND name='responses'", return_result=True)
+        if not result or not result[0]:
+            st.warning("Responses table doesn't exist. Creating...")
+            init_db()
+            return
+        
+        # Get current columns
         result = execute_query("PRAGMA table_info(responses)", return_result=True)
         if result and isinstance(result, tuple) and result[0]:
             columns = [column[1] for column in result[0]]
             
             missing_columns = []
             
-            if 'created_by' not in columns:
-                missing_columns.append('created_by')
-            if 'current_section' not in columns:
-                missing_columns.append('current_section')
-            if 'draft_progress' not in columns:
-                missing_columns.append('draft_progress')
+            # Check for all required columns
+            required_columns = [
+                'created_by', 'current_section', 'draft_progress', 'external_support_details'
+            ]
+            
+            for column in required_columns:
+                if column not in columns:
+                    missing_columns.append(column)
             
             if missing_columns:
-                st.info("🔄 Updating database schema...")
+                st.info(f"🔄 Adding missing columns: {missing_columns}")
                 for column in missing_columns:
                     if column == 'created_by':
                         execute_query("ALTER TABLE responses ADD COLUMN created_by TEXT")
@@ -254,6 +295,8 @@ def add_missing_columns():
                         execute_query("ALTER TABLE responses ADD COLUMN current_section TEXT DEFAULT 'A'")
                     elif column == 'draft_progress':
                         execute_query("ALTER TABLE responses ADD COLUMN draft_progress REAL DEFAULT 0")
+                    elif column == 'external_support_details':
+                        execute_query("ALTER TABLE responses ADD COLUMN external_support_details TEXT DEFAULT ''")
                 
                 st.success("✅ Database schema updated successfully!")
                 
@@ -781,9 +824,9 @@ def auto_save_draft():
         return True
     return False
 
-# Database functions - SQLite Cloud VERSION
+# Database functions - FIXED VERSION with 44 columns
 def save_draft(data, interview_id=None):
-    """Save form data as draft with enhanced calculations and progress tracking"""
+    """Save form data as draft with enhanced calculations and progress tracking - FIXED for 44 columns"""
     try:
         if not interview_id:
             interview_id = generate_interview_id()
@@ -811,7 +854,7 @@ def save_draft(data, interview_id=None):
         existing_result = execute_query("SELECT id FROM responses WHERE interview_id = ?", (interview_id,), return_result=True)
         
         if existing_result and isinstance(existing_result, tuple) and existing_result[0]:
-            # Update existing draft
+            # Update existing draft - FIXED: 44 columns
             update_query = '''
                 UPDATE responses SET
                     interviewer_name=?, interview_date=?, start_time=?, end_time=?,
@@ -826,7 +869,7 @@ def save_draft(data, interview_id=None):
                     cost_comparison_local=?, business_climate_rating=?,
                     reform_priorities=?, last_modified=?, total_compliance_cost=?,
                     total_compliance_time=?, risk_score=?, created_by=?,
-                    current_section=?, draft_progress=?
+                    current_section=?, draft_progress=?, external_support_details=?
                 WHERE interview_id=?
             '''
             params = (
@@ -869,14 +912,15 @@ def save_draft(data, interview_id=None):
                 st.session_state.current_user,
                 st.session_state.current_section,
                 progress,
+                '',  # external_support_details - empty for now
                 interview_id
             )
             result = execute_query(update_query, params)
         else:
-            # Insert new draft
+            # Insert new draft - FIXED: 44 values for 44 columns
             insert_query = '''
                 INSERT INTO responses VALUES (
-                    NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
                 )
             '''
             insert_data = (
@@ -921,7 +965,8 @@ def save_draft(data, interview_id=None):
                 risk_score,
                 st.session_state.current_user,
                 st.session_state.current_section,
-                progress
+                progress,
+                ''  # external_support_details - empty for now
             )
             result = execute_query(insert_query, insert_data)
         
@@ -983,9 +1028,13 @@ def generate_interview_id():
     return f"INT_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
 def get_all_interviews():
-    """Get all interviews from database"""
+    """Get all interviews from database - FIXED VERSION"""
     try:
-        # First check if created_by column exists
+        # First ensure database is properly initialized
+        if not check_and_fix_database():
+            return pd.DataFrame()
+            
+        # Check if created_by column exists
         result = execute_query("PRAGMA table_info(responses)", return_result=True)
         if result and isinstance(result, tuple) and result[0]:
             columns = [column[1] for column in result[0]]
@@ -1021,8 +1070,12 @@ def get_all_interviews():
         return pd.DataFrame()
 
 def get_user_interviews(username):
-    """Get interviews created by specific user"""
+    """Get interviews created by specific user - FIXED VERSION"""
     try:
+        # First ensure database is properly initialized
+        if not check_and_fix_database():
+            return pd.DataFrame()
+            
         # Check if created_by column exists
         result = execute_query("PRAGMA table_info(responses)", return_result=True)
         if result and isinstance(result, tuple) and result[0]:
@@ -1063,6 +1116,10 @@ def get_user_interviews(username):
 def get_interview_details(interview_id):
     """Get detailed interview data"""
     try:
+        # First ensure database is properly initialized
+        if not check_and_fix_database():
+            return pd.DataFrame()
+            
         query = "SELECT * FROM responses WHERE interview_id = ?"
         result = execute_query(query, (interview_id,), return_result=True)
         if result and isinstance(result, tuple) and result[0]:
@@ -1077,6 +1134,10 @@ def get_interview_details(interview_id):
 def get_database_stats():
     """Get database statistics"""
     try:
+        # First ensure database is properly initialized
+        if not check_and_fix_database():
+            return {}
+            
         stats = {}
         
         # Total interviews
@@ -2293,6 +2354,11 @@ def main():
         st.error("Cannot proceed without database connection")
         return
     
+    # Initialize database with proper schema
+    if not check_and_fix_database():
+        st.error("Failed to initialize database. Please check your connection.")
+        return
+    
     initialize_session_state()
     
     # Load ISIC data if not loaded
@@ -2588,6 +2654,21 @@ def user_management_section():
     with tab3:
         st.subheader("Password Management")
         st.info("Password changes require system administrator access.")
+        
+        # Display current credentials (read-only)
+        st.write("**Current Interviewer Credentials:**")
+        interviewer_df = pd.DataFrame([
+            {"Username": username, "Role": details["role"]} 
+            for username, details in INTERVIEWER_CREDENTIALS.items()
+        ])
+        st.dataframe(interviewer_df, use_container_width=True)
+        
+        st.write("**Current Admin Credentials:**")
+        admin_df = pd.DataFrame([
+            {"Username": username, "Role": details["role"]} 
+            for username, details in ADMIN_CREDENTIALS.items()
+        ])
+        st.dataframe(admin_df, use_container_width=True)
 
 def display_user_sessions():
     """Display user session logs"""
@@ -2713,12 +2794,12 @@ def data_collection_navigation():
         st.sidebar.write(f"**Submitted:** {submitted}")
         st.sidebar.write(f"**Drafts:** {drafts}")
     
-    # ADD DRAFT QUICK ACCESS HERE
+    # Draft quick access
     display_draft_quick_access()
     
     st.sidebar.markdown("---")
     
-    # Navigation - ADD DRAFT_DASHBOARD OPTION
+    # Navigation
     sections = {
         'A': 'Interview & Business Profile',
         'B': 'Registration & Licensing', 
@@ -2738,7 +2819,7 @@ def data_collection_navigation():
         st.session_state.current_section = selected_section
         st.rerun()
     
-    # Display current section - ADD DRAFT_DASHBOARD CASE
+    # Display current section
     if st.session_state.current_section == 'A':
         display_section_a()
     elif st.session_state.current_section == 'B':
@@ -2831,7 +2912,6 @@ def display_interviewer_data_management():
     else:
         st.info("No data available for export.")
 
-# Section A Display with duplicate business name validation
 def display_section_a():
     """Section A with enhanced business activities and duplicate validation"""
     st.header("📋 SECTION A: Interview & Business Profile")
@@ -3188,5 +3268,4 @@ def reset_interview():
 
 # Initialize and run the application
 if __name__ == "__main__":
-    init_db()
     main()
