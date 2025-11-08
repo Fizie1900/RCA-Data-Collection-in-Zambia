@@ -11,10 +11,26 @@ import sqlite3
 class ComplianceAnalytics:
     def __init__(self):
         self.conn = sqlite3.connect('compliance_survey.db', check_same_thread=False)
+    
+    def ensure_table_exists(self):
+        """Ensure the responses table exists"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='responses'")
+            if not cursor.fetchone():
+                st.error("❌ Database table 'responses' does not exist. Please initialize the database first.")
+                return False
+            return True
+        except Exception as e:
+            st.error(f"Error checking table existence: {str(e)}")
+            return False
         
     def get_analytics_data(self):
         """Get comprehensive data for analytics"""
         try:
+            if not self.ensure_table_exists():
+                return pd.DataFrame(), pd.DataFrame()
+                
             query = """
             SELECT 
                 r.*,
@@ -332,285 +348,4 @@ def display_procedure_details(procedures_df):
         st.info("No procedure data available for detailed analysis.")
         return
     
-    procedures = procedures_df['procedure'].unique()
-    selected_procedure = st.selectbox("Select Procedure for Detailed Analysis", procedures)
-    
-    if selected_procedure:
-        proc_data = procedures_df[procedures_df['procedure'] == selected_procedure]
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            avg_cost = proc_data['official_fees'].mean()
-            st.metric("Average Official Cost", f"ZMW {avg_cost:,.0f}")
-        
-        with col2:
-            avg_time = proc_data['total_days'].mean()
-            st.metric("Average Time", f"{avg_time:.1f} days")
-        
-        with col3:
-            avg_complexity = proc_data['complexity'].mean()
-            st.metric("Average Complexity", f"{avg_complexity:.1f}/5")
-        
-        with col4:
-            frequency = len(proc_data)
-            st.metric("Frequency", frequency)
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            fig_cost_dist = px.histogram(proc_data, x='official_fees',
-                                       title=f"Cost Distribution - {selected_procedure}",
-                                       labels={'official_fees': 'Official Cost (ZMW)'})
-            st.plotly_chart(fig_cost_dist, use_container_width=True)
-        
-        with col2:
-            fig_time_dist = px.box(proc_data, y='total_days',
-                                 title=f"Time Distribution - {selected_procedure}",
-                                 labels={'total_days': 'Total Days'})
-            st.plotly_chart(fig_time_dist, use_container_width=True)
-        
-        st.subheader("🏛️ Regulatory Authority Analysis")
-        authority_stats = proc_data.groupby('authority').agg({
-            'official_fees': ['mean', 'std', 'count'],
-            'total_days': ['mean', 'std']
-        }).round(0)
-        
-        if not authority_stats.empty:
-            authority_stats.columns = ['Avg_Cost', 'Std_Cost', 'Count', 'Avg_Days', 'Std_Days']
-            st.dataframe(authority_stats, use_container_width=True)
-
-def generate_powerbi_dataset(df, procedures_df):
-    """Generate optimized dataset for Power BI"""
-    
-    business_data = df[['interview_id', 'business_name', 'district', 'primary_sector', 
-                       'business_size', 'legal_status', 'total_compliance_cost', 
-                       'total_compliance_time', 'risk_score', 'employees_fulltime',
-                       'employees_parttime', 'year_established']].copy()
-    
-    if not procedures_df.empty:
-        procedures_data = procedures_df[['interview_id', 'procedure', 'authority', 
-                                       'official_fees', 'unofficial_payments', 'total_days',
-                                       'complexity', 'application_mode', 'status']].copy()
-    else:
-        procedures_data = pd.DataFrame()
-    
-    if not procedures_data.empty and not business_data.empty:
-        powerbi_data = pd.merge(business_data, procedures_data, on='interview_id', how='left')
-    else:
-        powerbi_data = business_data
-    
-    return powerbi_data
-
-def display_data_export(analytics, df, procedures_df):
-    """Display data export options"""
-    st.header("🔗 Data Export & Integration")
-    
-    st.subheader("📊 Power BI Integration")
-    
-    st.info("""
-    Use the data exports below to connect to Power BI for advanced analytics and reporting.
-    Recommended connection method: Import CSV files directly into Power BI.
-    """)
-    
-    powerbi_data = generate_powerbi_dataset(df, procedures_df)
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        csv_main = df.to_csv(index=False)
-        st.download_button(
-            label="💾 Download Main Dataset (CSV)",
-            data=csv_main,
-            file_name=f"compliance_main_data_{datetime.now().strftime('%Y%m%d')}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-    
-    with col2:
-        if not procedures_df.empty:
-            csv_procedures = procedures_df.to_csv(index=False)
-            st.download_button(
-                label="📋 Download Procedures Data (CSV)",
-                data=csv_procedures,
-                file_name=f"compliance_procedures_data_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
-    
-    with col3:
-        csv_powerbi = powerbi_data.to_csv(index=False)
-        st.download_button(
-            label="🚀 Download Power BI Dataset (CSV)",
-            data=csv_powerbi,
-            file_name=f"powerbi_compliance_data_{datetime.now().strftime('%Y%m%d')}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-    
-    st.subheader("🖼️ Chart Exports")
-    
-    if not df.empty:
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            try:
-                fig_cost = px.histogram(df, x='total_compliance_cost',
-                                      title="Compliance Cost Distribution")
-                img_cost = fig_cost.to_image(format="png")
-                st.download_button(
-                    label="📥 Download Cost Distribution",
-                    data=img_cost,
-                    file_name="cost_distribution.png",
-                    mime="image/png",
-                    use_container_width=True
-                )
-            except Exception as e:
-                st.warning("📊 Chart export requires Kaleido. Install with: `pip install -U kaleido`")
-                st.plotly_chart(fig_cost, use_container_width=True)
-        
-        with col2:
-            try:
-                fig_time = px.histogram(df, x='total_compliance_time',
-                                      title="Compliance Time Distribution")
-                img_time = fig_time.to_image(format="png")
-                st.download_button(
-                    label="📥 Download Time Distribution",
-                    data=img_time,
-                    file_name="time_distribution.png",
-                    mime="image/png",
-                    use_container_width=True
-                )
-            except Exception as e:
-                st.warning("📊 Chart export requires Kaleido. Install with: `pip install -U kaleido`")
-                st.plotly_chart(fig_time, use_container_width=True)          
-
-def create_custom_query_tool():
-    """Custom SQL query tool for advanced analysis"""
-    st.header("🔧 Custom Query Tool")
-    
-    st.warning("""
-    ⚠️ Advanced Feature: This tool allows direct SQL queries. 
-    Use with caution and only if you're familiar with SQL.
-    """)
-    
-    query = st.text_area("Enter your SQL query:", height=150,
-                        value="SELECT * FROM responses LIMIT 10")
-    
-    if st.button("Execute Query", use_container_width=True):
-        try:
-            conn = sqlite3.connect('compliance_survey.db', check_same_thread=False)
-            result_df = pd.read_sql(query, conn)
-            conn.close()
-            
-            st.subheader("Query Results")
-            st.dataframe(result_df, use_container_width=True)
-            
-            csv = result_df.to_csv(index=False)
-            st.download_button(
-                label="📥 Download Query Results",
-                data=csv,
-                file_name=f"query_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
-            
-        except Exception as e:
-            st.error(f"Query error: {str(e)}")
-
-def create_interactive_dashboard():
-    """Main interactive dashboard function"""
-    st.title("📊 Compliance Analytics Dashboard")
-    
-    analytics = ComplianceAnalytics()
-    df, procedures_df = analytics.get_analytics_data()
-    
-    if df.empty:
-        st.warning("No submitted interviews available for analysis.")
-        return
-    
-    st.sidebar.header("🔍 Filters")
-    
-    sectors = ['All'] + list(df['primary_sector'].unique())
-    selected_sector = st.sidebar.selectbox("Sector", sectors)
-    
-    districts = ['All'] + list(df['district'].unique())
-    selected_district = st.sidebar.selectbox("District", districts)
-    
-    sizes = ['All'] + list(df['business_size'].unique())
-    selected_size = st.sidebar.selectbox("Business Size", sizes)
-    
-    filtered_df = df.copy()
-    filtered_procedures = procedures_df.copy()
-    
-    if selected_sector != 'All':
-        filtered_df = filtered_df[filtered_df['primary_sector'] == selected_sector]
-        if not filtered_procedures.empty:
-            filtered_procedures = filtered_procedures[filtered_procedures['primary_sector'] == selected_sector]
-    
-    if selected_district != 'All':
-        filtered_df = filtered_df[filtered_df['district'] == selected_district]
-        if not filtered_procedures.empty:
-            filtered_procedures = filtered_procedures[filtered_procedures['district'] == selected_district]
-    
-    if selected_size != 'All':
-        filtered_df = filtered_df[filtered_df['business_size'] == selected_size]
-        if not filtered_procedures.empty:
-            filtered_procedures = filtered_procedures[filtered_procedures['business_size'] == selected_size]
-    
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
-        "📈 Overview", "💰 Cost Matrix", "🏢 Sector Analysis", "⏱️ Time Analysis", 
-        "📋 Procedure Details", "🔗 Data Export"
-    ])
-    
-    with tab1:
-        display_overview_metrics(filtered_df, filtered_procedures)
-    
-    with tab2:
-        display_cost_matrix(analytics, filtered_procedures)
-    
-    with tab3:
-        display_sector_analysis(analytics, filtered_df, filtered_procedures)
-    
-    with tab4:
-        display_time_analysis(filtered_procedures)
-    
-    with tab5:
-        display_procedure_details(filtered_procedures)
-    
-    with tab6:
-        display_data_export(analytics, filtered_df, filtered_procedures)
-
-def analytics_main():
-    """Main analytics application - integrated version"""
-    st.sidebar.header("📊 Analytics Navigation")
-    
-    analytics_option = st.sidebar.radio(
-        "Select Analytics Module:",
-        ["Interactive Dashboard", "Custom Query Tool", "About Analytics"]
-    )
-    
-    if analytics_option == "Interactive Dashboard":
-        create_interactive_dashboard()
-    elif analytics_option == "Custom Query Tool":
-        create_custom_query_tool()
-    else:
-        st.title("About Compliance Analytics")
-        st.info("""
-        **Compliance Analytics Dashboard**
-        
-        This module provides comprehensive analytics for regulatory compliance data,
-        including:
-        
-        - 📈 **Overview Metrics**: Key performance indicators and distributions
-        - 💰 **Cost Matrix**: Detailed cost analysis across procedures
-        - 🏢 **Sector Analysis**: Comparative analysis by business sector
-        - ⏱️ **Time Analysis**: Processing time and efficiency metrics
-        - 📋 **Procedure Details**: Deep dive into specific procedures
-        - 🔗 **Data Export**: Power BI integration and data exports
-        
-        **Data Sources**: compliance_survey.db database
-        **Export Formats**: CSV, PNG images, Power BI optimized datasets
-        """)
-
-if __name__ == "__main__":
-    analytics_main()
+    procedures = procedures_df['procedure
