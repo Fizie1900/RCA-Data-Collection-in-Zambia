@@ -1,4 +1,4 @@
-# app.py - Zambia Regulatory Compliance Survey
+# app.py - Zambia Regulatory Compliance Survey with SQLite Cloud
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -141,6 +141,310 @@ ADMIN_CREDENTIALS = {
     "admin": {"password": "compliance2024", "role": "admin"},
     "researcher": {"password": "data2024", "role": "researcher"}
 }
+
+# Application modes
+APPLICATION_MODES = ["Entirely In-Person", "Mixed", "Entirely Online"]
+DISTRICTS = ["Lusaka", "Kitwe", "Kasama", "Ndola", "Livingstone", "Other (Please specify)"]
+INTERVIEWERS = list(INTERVIEWER_CREDENTIALS.keys())
+
+# Enhanced ISIC data management for SQLite Cloud
+@st.cache_data
+def load_isic_dataframe():
+    """Load ISIC data from Excel file and return as DataFrame"""
+    excel_files = [
+        "Complete_ISIC5_Structure_16Dec2022final.xlsx",
+        "ISIC_Codes.xlsx", 
+        "isic_codes.xlsx",
+        "Complete_ISIC5.xlsx",
+        "ISIC_4.xlsx",
+        "isic_data.xlsx"
+    ]
+    
+    for filename in excel_files:
+        if os.path.exists(filename):
+            try:
+                df = pd.read_excel(filename)
+                st.success(f"✅ ISIC database loaded from: {filename}")
+                
+                # Cache the data in SQLite Cloud
+                cache_isic_data(df)
+                return df
+            except Exception as e:
+                st.warning(f"Could not load {filename}: {str(e)}")
+                continue
+    
+    # If no file found, try to load from cache
+    return load_isic_from_cache()
+
+def cache_isic_data(df):
+    """Cache ISIC data in SQLite Cloud for faster access"""
+    try:
+        # Clear existing cache
+        execute_query("DELETE FROM isic_cache")
+        
+        # Insert new data
+        insert_data = []
+        for _, row in df.iterrows():
+            code_col = next((col for col in ['Code', 'CODE', 'code'] if col in df.columns), None)
+            title_col = next((col for col in ['Title', 'TITLE', 'title'] if col in df.columns), None)
+            
+            if code_col and title_col:
+                code = str(row[code_col]) if pd.notna(row[code_col]) else None
+                title = str(row[title_col]) if pd.notna(row[title_col]) else ""
+                description = title
+                
+                if code:
+                    current_time = datetime.now().isoformat()
+                    insert_data.append((code, title, description, 'General', current_time))
+        
+        # Batch insert
+        if insert_data:
+            execute_many(
+                "INSERT INTO isic_cache (code, title, description, category, last_updated) VALUES (?, ?, ?, ?, ?)",
+                insert_data
+            )
+            st.success(f"✅ Cached {len(insert_data)} ISIC codes in database")
+        
+    except Exception as e:
+        st.warning(f"Could not cache ISIC data: {str(e)}")
+
+def load_isic_from_cache():
+    """Load ISIC data from SQLite Cloud cache"""
+    try:
+        result = execute_query("SELECT code, title, description FROM isic_cache", return_result=True)
+        if result and isinstance(result, tuple) and result[0]:
+            result_data, columns = result
+            df = pd.DataFrame(result_data, columns=columns)
+            
+            if not df.empty:
+                st.info("📁 Loaded ISIC data from cache")
+                return df
+            else:
+                st.warning("No ISIC data available in cache. Using basic codes.")
+                return create_basic_isic_data()
+        else:
+            st.warning("No ISIC data available. Using basic codes.")
+            return create_basic_isic_data()
+    except Exception as e:
+        st.warning(f"Error loading ISIC cache: {str(e)}")
+        return create_basic_isic_data()
+
+def create_basic_isic_data():
+    """Create basic ISIC data structure"""
+    basic_data = {
+        'Code': ['0111', '0112', '0113', '0114', '0115', '0116', '0121', '0122', 
+                '4100', '4101', '4102', '4310', '4311', '4312', '4320', '4321',
+                '4610', '4620', '4630', '4651', '4652', '4661', '4662'],
+        'Title': [
+            'Growing of cereals (except rice), leguminous crops and oil seeds',
+            'Growing of rice',
+            'Growing of vegetables and melons, roots and tubers',
+            'Growing of sugar cane',
+            'Growing of tobacco',
+            'Growing of fibre crops',
+            'Growing of grapes',
+            'Growing of tropical and subtropical fruits',
+            'Construction of buildings',
+            'Construction of residential buildings',
+            'Construction of non-residential buildings',
+            'Demolition and site preparation',
+            'Demolition',
+            'Site preparation',
+            'Electrical, plumbing and other construction installation activities',
+            'Electrical installation',
+            'Wholesale on a fee or contract basis',
+            'Wholesale of agricultural raw materials and live animals',
+            'Wholesale of food, beverages and tobacco',
+            'Wholesale of computers, computer peripheral equipment and software',
+            'Wholesale of electronic and telecommunications equipment and parts',
+            'Wholesale of agricultural machinery, equipment and supplies',
+            'Wholesale of construction machinery, equipment and supplies'
+        ]
+    }
+    return pd.DataFrame(basic_data)
+
+def search_isic_codes_enhanced(search_term, isic_df):
+    """Enhanced ISIC search with multiple matching strategies"""
+    if isic_df is None or not search_term:
+        return []
+    
+    search_term = str(search_term).strip().lower()
+    
+    try:
+        # Try different column combinations
+        code_col = next((col for col in ['Code', 'CODE', 'code'] if col in isic_df.columns), None)
+        title_col = next((col for col in ['Title', 'TITLE', 'title', 'Description', 'DESCRIPTION'] if col in isic_df.columns), None)
+        
+        if not code_col or not title_col:
+            return []
+        
+        # Multiple search strategies
+        exact_code_matches = isic_df[isic_df[code_col].astype(str).str.lower() == search_term]
+        code_contains = isic_df[isic_df[code_col].astype(str).str.lower().str.contains(search_term, na=False)]
+        title_contains = isic_df[isic_df[title_col].astype(str).str.lower().str.contains(search_term, na=False)]
+        
+        # Combine results
+        results = pd.concat([exact_code_matches, code_contains, title_contains]).drop_duplicates()
+        
+        formatted_results = []
+        for _, row in results.iterrows():
+            code = str(row[code_col]).strip()
+            title = str(row[title_col]).strip()
+            if code and title:
+                formatted_results.append({
+                    'code': code,
+                    'title': title,
+                    'display': f"{code} - {title}",
+                    'full_info': f"ISIC {code}: {title}"
+                })
+        
+        return formatted_results[:20]  # Limit results
+        
+    except Exception as e:
+        st.error(f"Search error: {str(e)}")
+        return []
+
+# Enhanced Business Activities with ISIC Integration for SQLite Cloud
+def business_activities_section():
+    """Enhanced business activities section with ISIC integration"""
+    
+    st.subheader("🏢 Business Activities & ISIC Classification")
+    
+    # Two-column layout for better organization
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.write("**Describe your main business activities:**")
+        business_activities = st.text_area(
+            "Business Activities Description *",
+            value=st.session_state.business_activities_text,
+            placeholder="Describe your main business activities, products, and services in detail...",
+            height=120,
+            key="business_activities_desc"
+        )
+        st.session_state.business_activities_text = business_activities
+    
+    with col2:
+        st.write("**💡 Tips:**")
+        st.write("• Be specific about products/services")
+        st.write("• Include all major revenue streams")
+        st.write("• Mention any specialized activities")
+    
+    # ISIC Code Selection Section
+    st.subheader("📊 ISIC Code Classification")
+    
+    # Enhanced ISIC search and selection
+    search_term = st.text_input(
+        "🔍 Search ISIC codes by code or description:",
+        placeholder="e.g., agriculture, construction, 0111, manufacturing",
+        key="isic_search_main",
+        value=st.session_state.isic_search_term
+    )
+    
+    # Update search term in session state
+    if search_term != st.session_state.isic_search_term:
+        st.session_state.isic_search_term = search_term
+    
+    # Display search results automatically when there's a search term
+    if st.session_state.isic_search_term and st.session_state.isic_df is not None:
+        with st.spinner("Searching ISIC codes..."):
+            search_results = search_isic_codes_enhanced(
+                st.session_state.isic_search_term, 
+                st.session_state.isic_df
+            )
+        
+        if search_results:
+            st.write(f"📋 Found {len(search_results)} matching ISIC codes:")
+            
+            # Display results in a compact format
+            for i, result in enumerate(search_results):
+                col1, col2, col3 = st.columns([3, 1, 1])
+                
+                with col1:
+                    st.write(f"**{result['code']}** - {result['title']}")
+                
+                with col2:
+                    if st.button("➕ Select", key=f"select_{i}"):
+                        if result['display'] not in st.session_state.selected_isic_codes:
+                            st.session_state.selected_isic_codes.append(result['display'])
+                            # Auto-update business activities text
+                            current_activities = st.session_state.business_activities_text
+                            new_activity = f"{result['title']} (ISIC: {result['code']})"
+                            if current_activities:
+                                st.session_state.business_activities_text = current_activities + "; " + new_activity
+                            else:
+                                st.session_state.business_activities_text = new_activity
+                            st.rerun()
+                
+                with col3:
+                    if st.button("ℹ️ Info", key=f"info_{i}"):
+                        st.info(f"**ISIC {result['code']}**: {result['title']}")
+            
+            st.markdown("---")
+        elif st.session_state.isic_search_term:  # Only show warning if there was a search term but no results
+            st.warning("No ISIC codes found. Try different search terms.")
+    
+    # Manual ISIC code entry
+    with st.expander("➕ Add Custom ISIC Code", expanded=False):
+        manual_col1, manual_col2, manual_col3 = st.columns([2, 2, 1])
+        
+        with manual_col1:
+            custom_code = st.text_input("ISIC Code:", placeholder="e.g., 0111", key="custom_code_input")
+        
+        with manual_col2:
+            custom_description = st.text_input("Description:", placeholder="e.g., Growing of cereals", key="custom_desc_input")
+        
+        with manual_col3:
+            st.write("")  # Spacer
+            st.write("")  # Spacer
+            if st.button("Add Custom", key="add_custom_isic"):
+                if custom_code and custom_description:
+                    custom_display = f"{custom_code} - {custom_description}"
+                    if custom_display not in st.session_state.selected_isic_codes:
+                        st.session_state.selected_isic_codes.append(custom_display)
+                        st.success(f"Added custom ISIC code: {custom_code}")
+                        st.rerun()
+    
+    # Display selected ISIC codes
+    if st.session_state.selected_isic_codes:
+        st.subheader("✅ Selected ISIC Codes")
+        
+        # Group codes by category for better organization
+        agri_codes = [code for code in st.session_state.selected_isic_codes if any(x in code for x in ['01', '02', '03'])]
+        construction_codes = [code for code in st.session_state.selected_isic_codes if any(x in code for x in ['41', '42', '43'])]
+        other_codes = [code for code in st.session_state.selected_isic_codes if code not in agri_codes + construction_codes]
+        
+        if agri_codes:
+            with st.expander("🌾 Agriculture Codes", expanded=True):
+                for i, code in enumerate(agri_codes):
+                    display_selected_isic_code(code, i, "agri")
+        
+        if construction_codes:
+            with st.expander("🏗️ Construction Codes", expanded=True):
+                for i, code in enumerate(construction_codes):
+                    display_selected_isic_code(code, i, "constr")
+        
+        if other_codes:
+            with st.expander("📦 Other Codes", expanded=True):
+                for i, code in enumerate(other_codes):
+                    display_selected_isic_code(code, i, "other")
+        
+        # Summary
+        st.info(f"**Total ISIC codes selected:** {len(st.session_state.selected_isic_codes)}")
+    
+    return business_activities
+
+def display_selected_isic_code(code, index, prefix):
+    """Display a selected ISIC code with remove option"""
+    col1, col2 = st.columns([4, 1])
+    
+    with col1:
+        st.write(f"• {code}")
+    
+    with col2:
+        if st.button("🗑️", key=f"remove_{prefix}_{index}"):
+            st.session_state.selected_isic_codes.pop(index)
+            st.rerun()
 
 # Initialize database - FIXED VERSION
 def init_db():
@@ -356,11 +660,6 @@ def initialize_session_state():
     for key, value in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = value
-
-# Application modes
-APPLICATION_MODES = ["Entirely In-Person", "Mixed", "Entirely Online"]
-DISTRICTS = ["Lusaka", "Kitwe", "Kasama", "Ndola", "Livingstone", "Other (Please specify)"]
-INTERVIEWERS = list(INTERVIEWER_CREDENTIALS.keys())
 
 # Database functions
 def save_draft(data, interview_id=None):
@@ -925,57 +1224,6 @@ def display_section_a():
     # ISIC Code section
     st.markdown("---")
     business_activities_section()
-
-def business_activities_section():
-    """Business activities section with ISIC integration"""
-    st.subheader("🏢 Business Activities & ISIC Classification")
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.write("**Describe your main business activities:**")
-        business_activities = st.text_area(
-            "Business Activities Description *",
-            value=st.session_state.business_activities_text,
-            placeholder="Describe your main business activities, products, and services in detail...",
-            height=120,
-            key="business_activities_desc"
-        )
-        st.session_state.business_activities_text = business_activities
-    
-    with col2:
-        st.write("**💡 Tips:**")
-        st.write("• Be specific about products/services")
-        st.write("• Include all major revenue streams")
-        st.write("• Mention any specialized activities")
-    
-    # ISIC Code Selection
-    st.subheader("📊 ISIC Code Classification")
-    
-    search_term = st.text_input(
-        "🔍 Search ISIC codes by code or description:",
-        placeholder="e.g., agriculture, construction, 0111, manufacturing",
-        key="isic_search_main",
-        value=st.session_state.isic_search_term
-    )
-    
-    if search_term != st.session_state.isic_search_term:
-        st.session_state.isic_search_term = search_term
-    
-    # Display selected ISIC codes
-    if st.session_state.selected_isic_codes:
-        st.subheader("✅ Selected ISIC Codes")
-        
-        for i, code in enumerate(st.session_state.selected_isic_codes):
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                st.write(f"• {code}")
-            with col2:
-                if st.button("🗑️", key=f"remove_isic_{i}"):
-                    st.session_state.selected_isic_codes.pop(i)
-                    st.rerun()
-    
-    return business_activities
 
 # Section B - Registration & Licensing
 def enhanced_section_b():
@@ -2255,6 +2503,11 @@ def main():
             else:
                 st.error("Failed to initialize database. Please check your connection.")
                 return
+    
+    # Load ISIC data if not loaded
+    if st.session_state.isic_df is None:
+        with st.spinner("📊 Loading ISIC classification data..."):
+            st.session_state.isic_df = load_isic_dataframe()
     
     # Run database migrations
     add_missing_columns()
