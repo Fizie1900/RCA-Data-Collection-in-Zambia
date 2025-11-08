@@ -20,14 +20,10 @@ except ImportError:
         st.info("📝 Interview Editor - Module not available")
 
 try:
-    from analytics_dashboard import analytics_main, ComplianceAnalytics
+    from analytics_dashboard import analytics_main
 except ImportError:
     def analytics_main():
         st.info("📊 Analytics Dashboard - Module not available")
-    
-    class ComplianceAnalytics:
-        def __init__(self):
-            pass
 
 try:
     from draft_manager import DraftManager, display_draft_dashboard, display_draft_quick_access, load_draft_into_session
@@ -37,16 +33,6 @@ except ImportError:
             pass
         def get_user_drafts(self, username):
             return pd.DataFrame()
-        def get_all_drafts(self):
-            return pd.DataFrame()
-        def load_draft(self, interview_id):
-            return None
-        def update_draft_progress(self, interview_id, current_section, progress_percentage):
-            return False
-        def delete_draft(self, interview_id):
-            return False
-        def calculate_progress(self, form_data, current_section):
-            return 0
     
     def display_draft_dashboard():
         st.info("📝 Draft Manager not available")
@@ -142,120 +128,97 @@ ADMIN_CREDENTIALS = {
     "researcher": {"password": "data2024", "role": "researcher"}
 }
 
-# Initialize database - FIXED VERSION
+# Initialize database
 def init_db():
     """Initialize database tables in SQLite Cloud"""
     conn = get_connection()
     if conn is None:
-        st.error("❌ Cannot connect to database")
         return False
     
     try:
         c = conn.cursor()
         
-        # Check if tables exist first
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='responses'")
-        table_exists = c.fetchone()
+        # Main responses table
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS responses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                interview_id TEXT UNIQUE,
+                interviewer_name TEXT,
+                interview_date TEXT,
+                start_time TEXT,
+                end_time TEXT,
+                business_name TEXT,
+                district TEXT,
+                physical_address TEXT,
+                contact_person TEXT,
+                email TEXT,
+                phone TEXT,
+                primary_sector TEXT,
+                legal_status TEXT,
+                business_size TEXT,
+                ownership_structure TEXT,
+                gender_owner TEXT,
+                business_activities TEXT,
+                isic_codes TEXT,
+                year_established INTEGER,
+                turnover_range TEXT,
+                employees_fulltime INTEGER,
+                employees_parttime INTEGER,
+                procedure_data TEXT,
+                completion_time_local REAL,
+                completion_time_national REAL,
+                completion_time_dk REAL,
+                compliance_cost_percentage REAL,
+                permit_comparison_national INTEGER,
+                permit_comparison_local INTEGER,
+                cost_comparison_national INTEGER,
+                cost_comparison_local INTEGER,
+                business_climate_rating INTEGER,
+                reform_priorities TEXT,
+                status TEXT DEFAULT 'draft',
+                submission_date TIMESTAMP,
+                last_modified TIMESTAMP,
+                total_compliance_cost REAL DEFAULT 0,
+                total_compliance_time INTEGER DEFAULT 0,
+                risk_score REAL DEFAULT 0,
+                created_by TEXT,
+                current_section TEXT DEFAULT 'A',
+                draft_progress REAL DEFAULT 0
+            )
+        ''')
         
-        if not table_exists:
-            st.info("🔄 Creating database tables...")
-            
-            # Main responses table
-            c.execute('''
-                CREATE TABLE responses (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    interview_id TEXT UNIQUE,
-                    interviewer_name TEXT,
-                    interview_date TEXT,
-                    start_time TEXT,
-                    end_time TEXT,
-                    business_name TEXT,
-                    district TEXT,
-                    physical_address TEXT,
-                    contact_person TEXT,
-                    email TEXT,
-                    phone TEXT,
-                    primary_sector TEXT,
-                    legal_status TEXT,
-                    business_size TEXT,
-                    ownership_structure TEXT,
-                    gender_owner TEXT,
-                    business_activities TEXT,
-                    isic_codes TEXT,
-                    year_established INTEGER,
-                    turnover_range TEXT,
-                    employees_fulltime INTEGER,
-                    employees_parttime INTEGER,
-                    procedure_data TEXT,
-                    completion_time_local REAL,
-                    completion_time_national REAL,
-                    completion_time_dk REAL,
-                    compliance_cost_percentage REAL,
-                    permit_comparison_national INTEGER,
-                    permit_comparison_local INTEGER,
-                    cost_comparison_national INTEGER,
-                    cost_comparison_local INTEGER,
-                    business_climate_rating INTEGER,
-                    reform_priorities TEXT,
-                    status TEXT DEFAULT 'draft',
-                    submission_date TIMESTAMP,
-                    last_modified TIMESTAMP,
-                    total_compliance_cost REAL DEFAULT 0,
-                    total_compliance_time INTEGER DEFAULT 0,
-                    risk_score REAL DEFAULT 0,
-                    created_by TEXT,
-                    current_section TEXT DEFAULT 'A',
-                    draft_progress REAL DEFAULT 0
-                )
-            ''')
-            
-            # Additional tables
-            c.execute('''
-                CREATE TABLE IF NOT EXISTS isic_cache (
-                    code TEXT PRIMARY KEY,
-                    title TEXT,
-                    description TEXT,
-                    category TEXT,
-                    last_updated TIMESTAMP
-                )
-            ''')
-            
-            c.execute('''
-                CREATE TABLE IF NOT EXISTS admin_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT,
-                    action TEXT,
-                    timestamp TIMESTAMP,
-                    details TEXT
-                )
-            ''')
-            
-            c.execute('''
-                CREATE TABLE IF NOT EXISTS user_sessions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT,
-                    login_time TIMESTAMP,
-                    logout_time TIMESTAMP,
-                    session_duration INTEGER
-                )
-            ''')
-            
-            c.execute('''
-                CREATE TABLE IF NOT EXISTS edit_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    username TEXT,
-                    interview_id TEXT,
-                    action TEXT,
-                    changes TEXT,
-                    timestamp TIMESTAMP
-                )
-            ''')
-            
-            conn.commit()
-            st.success("✅ Database tables created successfully!")
-        else:
-            st.success("✅ Database tables already exist!")
+        # Additional tables
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS isic_cache (
+                code TEXT PRIMARY KEY,
+                title TEXT,
+                description TEXT,
+                category TEXT,
+                last_updated TIMESTAMP
+            )
+        ''')
         
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS admin_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT,
+                action TEXT,
+                timestamp TIMESTAMP,
+                details TEXT
+            )
+        ''')
+        
+        c.execute('''
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT,
+                login_time TIMESTAMP,
+                logout_time TIMESTAMP,
+                session_duration INTEGER
+            )
+        ''')
+        
+        conn.commit()
         return True
         
     except Exception as e:
@@ -267,15 +230,10 @@ def init_db():
 def check_and_fix_database():
     """Check database schema and fix if needed"""
     try:
-        # First try to initialize the database
-        if not init_db():
-            return False
-        
-        # Check if responses table exists
         result = execute_query("SELECT name FROM sqlite_master WHERE type='table' AND name='responses'", return_result=True)
         
         if not result or not result[0] or len(result[0]) == 0:
-            st.warning("📊 Database tables not found. Creating...")
+            st.warning("📊 Database not found. Initializing...")
             return init_db()
         
         return True
@@ -286,21 +244,12 @@ def check_and_fix_database():
 def add_missing_columns():
     """Add missing columns to existing database tables"""
     try:
-        # First ensure database is properly initialized
-        if not check_and_fix_database():
-            return False
-            
-        # Get current columns
         result = execute_query("PRAGMA table_info(responses)", return_result=True)
         if result and isinstance(result, tuple) and result[0]:
             columns = [column[1] for column in result[0]]
             
             missing_columns = []
-            
-            # Check for all required columns
-            required_columns = [
-                'created_by', 'current_section', 'draft_progress'
-            ]
+            required_columns = ['created_by', 'current_section', 'draft_progress']
             
             for column in required_columns:
                 if column not in columns:
@@ -315,8 +264,6 @@ def add_missing_columns():
                         execute_query("ALTER TABLE responses ADD COLUMN current_section TEXT DEFAULT 'A'")
                     elif column == 'draft_progress':
                         execute_query("ALTER TABLE responses ADD COLUMN draft_progress REAL DEFAULT 0")
-                
-                st.success("✅ Database schema updated successfully!")
                 
         return True
     except Exception as e:
@@ -349,8 +296,7 @@ def initialize_session_state():
         'interviewer_logged_in': False,
         'current_user': None,
         'user_role': None,
-        'app_mode': 'login',
-        'database_initialized': False
+        'app_mode': 'login'
     }
     
     for key, value in defaults.items():
@@ -568,7 +514,6 @@ def generate_interview_id():
 def get_all_interviews():
     """Get all interviews from database"""
     try:
-        # First ensure database is properly initialized
         if not check_and_fix_database():
             return pd.DataFrame()
             
@@ -594,7 +539,6 @@ def get_all_interviews():
 def get_user_interviews(username):
     """Get interviews created by specific user"""
     try:
-        # First ensure database is properly initialized
         if not check_and_fix_database():
             return pd.DataFrame()
             
@@ -621,7 +565,6 @@ def get_user_interviews(username):
 def get_interview_details(interview_id):
     """Get detailed interview data"""
     try:
-        # First ensure database is properly initialized
         if not check_and_fix_database():
             return pd.DataFrame()
             
@@ -639,7 +582,6 @@ def get_interview_details(interview_id):
 def get_database_stats():
     """Get database statistics"""
     try:
-        # First ensure database is properly initialized
         if not check_and_fix_database():
             return {}
             
@@ -732,15 +674,6 @@ def login_system():
     """Enhanced login system"""
     st.title("🔐 Zambia Regulatory Compliance Survey")
     st.subheader("Login to Access the System")
-    
-    # Initialize database on first load
-    if not st.session_state.get('database_initialized', False):
-        with st.spinner("🔄 Initializing database..."):
-            if check_and_fix_database():
-                st.session_state.database_initialized = True
-                st.success("✅ Database initialized successfully!")
-            else:
-                st.error("❌ Failed to initialize database")
     
     login_type = st.radio("Login as:", ["Interviewer", "Administrator"], horizontal=True)
     
@@ -2238,23 +2171,17 @@ def display_interviewer_data_management():
 
 # Main Application
 def main():
-    # Initialize session state first
-    initialize_session_state()
-    
-    # Test database connection first
+    # Test database connection
     if not test_connection():
         st.error("Cannot proceed without database connection")
-        st.info("Please check your SQLite Cloud connection string and try again.")
         return
     
     # Initialize database
-    if not st.session_state.get('database_initialized', False):
-        with st.spinner("🔄 Setting up database..."):
-            if check_and_fix_database():
-                st.session_state.database_initialized = True
-            else:
-                st.error("Failed to initialize database. Please check your connection.")
-                return
+    if not check_and_fix_database():
+        st.error("Failed to initialize database. Please check your connection.")
+        return
+    
+    initialize_session_state()
     
     # Run database migrations
     add_missing_columns()
