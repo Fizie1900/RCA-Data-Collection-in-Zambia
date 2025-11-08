@@ -1,4 +1,4 @@
-# app.py - Zambia Regulatory Compliance Survey with SQLite Cloud and pyisic integration
+# app.py - Zambia Regulatory Compliance Survey
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -11,16 +11,6 @@ import io
 import base64
 import hashlib
 import sqlitecloud
-from typing import List, Dict, Any, Optional
-
-# Import pyisic for ISIC classification
-try:
-    import pyisic
-    from pyisic import ISICVersion, ISICType
-    PYISIC_AVAILABLE = True
-except ImportError:
-    PYISIC_AVAILABLE = False
-    st.warning("⚠️ pyisic not available. Using fallback ISIC data.")
 
 # Import modules
 try:
@@ -38,6 +28,34 @@ except ImportError:
     class ComplianceAnalytics:
         def __init__(self):
             pass
+
+try:
+    from draft_manager import DraftManager, display_draft_dashboard, display_draft_quick_access, load_draft_into_session
+except ImportError:
+    class DraftManager:
+        def __init__(self):
+            pass
+        def get_user_drafts(self, username):
+            return pd.DataFrame()
+        def get_all_drafts(self):
+            return pd.DataFrame()
+        def load_draft(self, interview_id):
+            return None
+        def update_draft_progress(self, interview_id, current_section, progress_percentage):
+            return False
+        def delete_draft(self, interview_id):
+            return False
+        def calculate_progress(self, form_data, current_section):
+            return 0
+    
+    def display_draft_dashboard():
+        st.info("📝 Draft Manager not available")
+    
+    def display_draft_quick_access():
+        pass
+    
+    def load_draft_into_session(draft_manager, interview_id):
+        st.error("Draft manager not available")
 
 # SQLite Cloud configuration
 SQLITECLOUD_CONFIG = {
@@ -123,1283 +141,6 @@ ADMIN_CREDENTIALS = {
     "admin": {"password": "compliance2024", "role": "admin"},
     "researcher": {"password": "data2024", "role": "researcher"}
 }
-
-# Application modes
-APPLICATION_MODES = ["Entirely In-Person", "Mixed", "Entirely Online"]
-DISTRICTS = ["Lusaka", "Kitwe", "Kasama", "Ndola", "Livingstone", "Other (Please specify)"]
-INTERVIEWERS = list(INTERVIEWER_CREDENTIALS.keys())
-
-# Initialize session state variables
-def initialize_session_state():
-    """Initialize all session state variables"""
-    defaults = {
-        'logged_in': False,
-        'current_user': None,
-        'user_role': None,
-        'interviewer_logged_in': False,
-        'admin_logged_in': False,
-        'current_section': 'A',
-        'current_interview_id': None,
-        'form_data': {},
-        'procedures_list': [],
-        'selected_isic_codes': [],
-        'business_activities_text': "",
-        'show_draft_dashboard': False,
-        'custom_procedures': [],
-        'custom_authorities': [],
-        'manual_isic_input': "",
-        'selected_isic_for_business': "",
-        'isic_search_term': "",
-        'show_detailed_form': False,
-        'use_template': False,
-        'interview_start_time': None,
-        'active_procedure_index': None,
-        'district_specific_notes': {},
-        'isic_df': None,
-        'bulk_procedure_mode': False,
-        'quick_manual_mode': False,
-        'app_mode': 'login',
-        'database_initialized': False
-    }
-    
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
-
-# Initialize the session state
-initialize_session_state()
-
-# Draft Manager Class
-class DraftManager:
-    def __init__(self):
-        pass
-    
-    def get_user_drafts(self, username):
-        """Get all drafts for a specific user"""
-        try:
-            query = """
-            SELECT 
-                interview_id, business_name, district, primary_sector, 
-                business_size, status, last_modified, current_section,
-                draft_progress, created_by
-            FROM responses 
-            WHERE status = 'draft' AND created_by = ?
-            ORDER BY last_modified DESC
-            """
-            result = execute_query(query, (username,), return_result=True)
-            if result and isinstance(result, tuple) and result[0]:
-                result_data, columns = result
-                return pd.DataFrame(result_data, columns=columns)
-            return pd.DataFrame()
-        except Exception as e:
-            st.error(f"Error loading drafts: {str(e)}")
-            return pd.DataFrame()
-    
-    def get_all_drafts(self):
-        """Get all drafts (for admins)"""
-        try:
-            query = """
-            SELECT 
-                interview_id, business_name, district, primary_sector, 
-                business_size, status, last_modified, current_section,
-                draft_progress, created_by
-            FROM responses 
-            WHERE status = 'draft'
-            ORDER BY last_modified DESC
-            """
-            result = execute_query(query, return_result=True)
-            if result and isinstance(result, tuple) and result[0]:
-                result_data, columns = result
-                return pd.DataFrame(result_data, columns=columns)
-            return pd.DataFrame()
-        except Exception as e:
-            st.error(f"Error loading drafts: {str(e)}")
-            return pd.DataFrame()
-    
-    def load_draft(self, interview_id):
-        """Load a specific draft by interview ID"""
-        try:
-            query = "SELECT * FROM responses WHERE interview_id = ?"
-            result = execute_query(query, (interview_id,), return_result=True)
-            if result and isinstance(result, tuple) and result[0]:
-                result_data, columns = result
-                df = pd.DataFrame(result_data, columns=columns)
-                if not df.empty:
-                    return df.iloc[0].to_dict()
-            return None
-        except Exception as e:
-            st.error(f"Error loading draft: {str(e)}")
-            return None
-    
-    def update_draft_progress(self, interview_id, current_section, progress_percentage):
-        """Update draft progress and current section"""
-        try:
-            current_time = datetime.now().isoformat()
-            result = execute_query('''
-                UPDATE responses 
-                SET current_section = ?, draft_progress = ?, last_modified = ?
-                WHERE interview_id = ?
-            ''', (current_section, progress_percentage, current_time, interview_id))
-            return result is not None
-        except Exception as e:
-            st.error(f"Error updating draft progress: {str(e)}")
-            return False
-    
-    def delete_draft(self, interview_id):
-        """Delete a draft interview"""
-        try:
-            result = execute_query("DELETE FROM responses WHERE interview_id = ? AND status = 'draft'", (interview_id,))
-            return result is not None
-        except Exception as e:
-            st.error(f"Error deleting draft: {str(e)}")
-            return False
-    
-    def calculate_progress(self, form_data, current_section):
-        """Calculate progress percentage based on completed sections"""
-        progress = 0
-        sections_completed = 0
-        total_sections = 4  # A, B, C, D
-        
-        # Check Section A completion
-        if form_data.get('business_name') and form_data.get('contact_person'):
-            sections_completed += 1
-        
-        # Check Section B completion (procedures)
-        if form_data.get('procedure_data'):
-            try:
-                procedures = json.loads(form_data['procedure_data'])
-                if procedures and len(procedures) > 0:
-                    sections_completed += 1
-            except:
-                pass
-        
-        # Check Section C completion
-        if (form_data.get('completion_time_local') is not None and 
-            form_data.get('completion_time_national') is not None):
-            sections_completed += 1
-        
-        # Check Section D completion
-        if form_data.get('reform_priorities'):
-            try:
-                reforms = json.loads(form_data['reform_priorities'])
-                if reforms and len(reforms) > 0:
-                    sections_completed += 1
-            except:
-                pass
-        
-        # Base progress + current section progress
-        base_progress = (sections_completed / total_sections) * 80
-        current_section_progress = 20  # 20% for current active section
-        
-        return min(base_progress + current_section_progress, 100)
-
-def display_draft_dashboard():
-    """Main draft management dashboard"""
-    st.title("📋 Draft Management")
-    
-    # Initialize draft manager
-    draft_manager = DraftManager()
-    
-    # Get user's drafts
-    if st.session_state.get('admin_logged_in', False):
-        drafts_df = draft_manager.get_all_drafts()
-        user_type = "All Users"
-    else:
-        drafts_df = draft_manager.get_user_drafts(st.session_state.current_user)
-        user_type = "Your"
-    
-    if not drafts_df.empty:
-        st.subheader(f"{user_type} Draft Interviews ({len(drafts_df)})")
-        
-        # Display drafts in a nice format
-        for index, draft in drafts_df.iterrows():
-            display_draft_card(draft_manager, draft, index)
-    else:
-        st.info("💡 No draft interviews found. Start a new interview to create drafts!")
-    
-    # Quick actions
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("🚀 Quick Actions")
-    
-    col1, col2 = st.sidebar.columns(2)
-    with col1:
-        if st.button("🆕 New Interview", use_container_width=True, key="new_interview_btn"):
-            reset_interview()
-            st.session_state.current_section = 'A'
-            st.rerun()
-    
-    with col2:
-        if st.button("🔄 Refresh", use_container_width=True, key="refresh_drafts"):
-            st.rerun()
-
-def display_draft_card(draft_manager, draft, index):
-    """Display a draft as a card with actions"""
-    with st.container():
-        st.markdown("---")
-        
-        col1, col2, col3 = st.columns([3, 1, 1])
-        
-        with col1:
-            st.write(f"### {draft['business_name'] or 'Unnamed Business'}")
-            
-            # Draft info
-            info_col1, info_col2, info_col3 = st.columns(3)
-            with info_col1:
-                st.write(f"**District:** {draft['district'] or 'Not set'}")
-                st.write(f"**Sector:** {draft['primary_sector'] or 'Not set'}")
-            with info_col2:
-                st.write(f"**Last Saved:** {draft['last_modified'][:16] if draft['last_modified'] else 'Never'}")
-                st.write(f"**Current Section:** {draft['current_section'] or 'A'}")
-            with info_col3:
-                st.write(f"**Progress:** {draft['draft_progress'] or 0}%")
-                if draft['created_by'] and st.session_state.get('admin_logged_in', False):
-                    st.write(f"**Created by:** {draft['created_by']}")
-            
-            # Progress bar
-            progress = draft['draft_progress'] or 0
-            st.progress(progress / 100)
-        
-        with col2:
-            if st.button("➡️ Continue", key=f"continue_{index}", use_container_width=True):
-                load_draft_into_session(draft_manager, draft['interview_id'])
-                st.rerun()
-        
-        with col3:
-            if st.button("🗑️ Delete", key=f"delete_{index}", use_container_width=True):
-                if draft_manager.delete_draft(draft['interview_id']):
-                    st.success("✅ Draft deleted successfully!")
-                    st.rerun()
-
-def load_draft_into_session(draft_manager, interview_id):
-    """Load a draft into the current session"""
-    draft_data = draft_manager.load_draft(interview_id)
-    
-    if draft_data:
-        # Load all session state variables
-        st.session_state.current_interview_id = interview_id
-        st.session_state.form_data = {
-            'interviewer_name': draft_data.get('interviewer_name', ''),
-            'interview_date': draft_data.get('interview_date', ''),
-            'start_time': draft_data.get('start_time', ''),
-            'end_time': draft_data.get('end_time', ''),
-            'business_name': draft_data.get('business_name', ''),
-            'district': draft_data.get('district', ''),
-            'physical_address': draft_data.get('physical_address', ''),
-            'contact_person': draft_data.get('contact_person', ''),
-            'email': draft_data.get('email', ''),
-            'phone': draft_data.get('phone', ''),
-            'primary_sector': draft_data.get('primary_sector', ''),
-            'legal_status': draft_data.get('legal_status', ''),
-            'business_size': draft_data.get('business_size', ''),
-            'ownership_structure': draft_data.get('ownership_structure', ''),
-            'gender_owner': draft_data.get('gender_owner', ''),
-            'business_activities': draft_data.get('business_activities', ''),
-            'year_established': draft_data.get('year_established', 0),
-            'turnover_range': draft_data.get('turnover_range', ''),
-            'employees_fulltime': draft_data.get('employees_fulltime', 0),
-            'employees_parttime': draft_data.get('employees_parttime', 0),
-            'completion_time_local': draft_data.get('completion_time_local', 0),
-            'completion_time_national': draft_data.get('completion_time_national', 0),
-            'completion_time_dk': draft_data.get('completion_time_dk', 0),
-            'compliance_cost_percentage': draft_data.get('compliance_cost_percentage', 0),
-            'permit_comparison_national': draft_data.get('permit_comparison_national', ''),
-            'permit_comparison_local': draft_data.get('permit_comparison_local', ''),
-            'cost_comparison_national': draft_data.get('cost_comparison_national', ''),
-            'cost_comparison_local': draft_data.get('cost_comparison_local', ''),
-            'business_climate_rating': draft_data.get('business_climate_rating', ''),
-            'reform_priorities': draft_data.get('reform_priorities', '[]')
-        }
-        
-        # Load procedures
-        procedures_json = draft_data.get('procedure_data')
-        if procedures_json and procedures_json != 'null' and procedures_json != '[]':
-            try:
-                st.session_state.procedures_list = json.loads(procedures_json)
-            except:
-                st.session_state.procedures_list = []
-        else:
-            st.session_state.procedures_list = []
-        
-        # Load ISIC codes
-        isic_json = draft_data.get('isic_codes')
-        if isic_json and isic_json != 'null' and isic_json != '[]':
-            try:
-                st.session_state.selected_isic_codes = json.loads(isic_json)
-            except:
-                st.session_state.selected_isic_codes = []
-        else:
-            st.session_state.selected_isic_codes = []
-        
-        # Load business activities text
-        st.session_state.business_activities_text = draft_data.get('business_activities', '')
-        
-        # Set current section
-        st.session_state.current_section = draft_data.get('current_section', 'A')
-        
-        st.success(f"✅ Loaded draft: {draft_data.get('business_name', 'Unnamed Business')}")
-    else:
-        st.error("❌ Failed to load draft")
-
-def display_draft_quick_access():
-    """Display quick draft access in sidebar"""
-    if st.session_state.get('interviewer_logged_in', False) or st.session_state.get('admin_logged_in', False):
-        draft_manager = DraftManager()
-        
-        if st.session_state.get('admin_logged_in', False):
-            drafts_df = draft_manager.get_all_drafts()
-        else:
-            drafts_df = draft_manager.get_user_drafts(st.session_state.current_user)
-        
-        if not drafts_df.empty:
-            st.sidebar.markdown("---")
-            st.sidebar.subheader("📝 Your Drafts")
-            
-            for index, draft in drafts_df.head(3).iterrows():  # Show only 3 most recent
-                business_name = draft['business_name'] or 'Unnamed Business'
-                progress = draft['draft_progress'] or 0
-                
-                if st.sidebar.button(
-                    f"➡️ {business_name[:20]}... ({progress}%)", 
-                    key=f"sidebar_draft_{index}",
-                    use_container_width=True
-                ):
-                    load_draft_into_session(draft_manager, draft['interview_id'])
-                    st.rerun()
-            
-            # Show "View All" if there are more drafts
-            if len(drafts_df) > 3:
-                if st.sidebar.button("📋 View All Drafts", use_container_width=True):
-                    st.session_state.current_section = 'Draft_Dashboard'
-                    st.rerun()
-
-def auto_save_draft():
-    """Auto-save current form state as draft"""
-    if (st.session_state.get('form_data') and 
-        st.session_state.get('current_interview_id') and
-        st.session_state.get('interviewer_logged_in', False)):
-        
-        # Calculate progress
-        draft_manager = DraftManager()
-        progress = draft_manager.calculate_progress(
-            st.session_state.form_data, 
-            st.session_state.current_section
-        )
-        
-        # Update progress
-        draft_manager.update_draft_progress(
-            st.session_state.current_interview_id,
-            st.session_state.current_section,
-            progress
-        )
-        
-        return True
-    return False
-
-def reset_interview():
-    """Reset the interview session state"""
-    st.session_state.current_interview_id = None
-    st.session_state.form_data = {}
-    st.session_state.procedures_list = []
-    st.session_state.selected_isic_codes = []
-    st.session_state.business_activities_text = ""
-    st.session_state.current_section = 'A'
-
-# pyisic Integration for ISIC Classification
-class PyISICClient:
-    """Client for ISIC classification using pyisic library"""
-    
-    def __init__(self):
-        self.available = PYISIC_AVAILABLE
-        if self.available:
-            st.success("✅ pyisic library loaded successfully!")
-        else:
-            st.warning("⚠️ pyisic not available - using fallback data")
-    
-    def search_isic_codes(self, search_term: str, limit: int = 20) -> List[Dict[str, Any]]:
-        """
-        Search ISIC codes using pyisic library
-        
-        Args:
-            search_term: Term to search for (code or description)
-            limit: Maximum number of results to return
-            
-        Returns:
-            List of ISIC code dictionaries
-        """
-        if not self.available:
-            return self._fallback_search(search_term, limit)
-        
-        try:
-            results = []
-            search_term_lower = search_term.lower().strip()
-            
-            # Search through ISIC versions (try both ISIC 4 and 3.1)
-            for version in [ISICVersion.ISIC4, ISICVersion.ISIC3_1]:
-                try:
-                    # Get all codes for this version
-                    all_codes = pyisic.get_codes(version)
-                    
-                    for code, details in all_codes.items():
-                        # Check if search term matches code or description
-                        code_match = search_term_lower in code.lower()
-                        desc_match = search_term_lower in details.description.lower() if details.description else False
-                        
-                        if code_match or desc_match:
-                            results.append({
-                                'code': code,
-                                'title': details.description,
-                                'description': details.description,
-                                'display': f"{code} - {details.description}",
-                                'full_info': f"ISIC {code}: {details.description}",
-                                'version': version.value,
-                                'level': getattr(details, 'level', 'N/A')
-                            })
-                            
-                            # Break if we have enough results
-                            if len(results) >= limit:
-                                break
-                
-                except Exception as e:
-                    continue  # Try next version if one fails
-            
-            # Remove duplicates based on code
-            seen_codes = set()
-            unique_results = []
-            for result in results:
-                if result['code'] not in seen_codes:
-                    seen_codes.add(result['code'])
-                    unique_results.append(result)
-            
-            return unique_results[:limit]
-            
-        except Exception as e:
-            st.error(f"❌ pyisic search error: {str(e)}")
-            return self._fallback_search(search_term, limit)
-    
-    def get_isic_code_details(self, code: str) -> Optional[Dict[str, Any]]:
-        """
-        Get detailed information for a specific ISIC code
-        
-        Args:
-            code: ISIC code to lookup
-            
-        Returns:
-            Dictionary with code details or None if not found
-        """
-        if not self.available:
-            return self._fallback_get_details(code)
-        
-        try:
-            # Try different ISIC versions
-            for version in [ISICVersion.ISIC4, ISICVersion.ISIC3_1]:
-                try:
-                    details = pyisic.get_code(code, version)
-                    if details:
-                        return {
-                            'code': code,
-                            'title': details.description,
-                            'description': details.description,
-                            'version': version.value,
-                            'level': getattr(details, 'level', 'N/A'),
-                            'parent': getattr(details, 'parent', None)
-                        }
-                except:
-                    continue
-            
-            return None
-            
-        except Exception as e:
-            return self._fallback_get_details(code)
-    
-    def validate_isic_code(self, code: str) -> bool:
-        """
-        Validate if a code is a valid ISIC code
-        
-        Args:
-            code: ISIC code to validate
-            
-        Returns:
-            True if valid, False otherwise
-        """
-        if not self.available:
-            return self._fallback_validate(code)
-        
-        try:
-            for version in [ISICVersion.ISIC4, ISICVersion.ISIC3_1]:
-                try:
-                    details = pyisic.get_code(code, version)
-                    if details:
-                        return True
-                except:
-                    continue
-            return False
-        except:
-            return self._fallback_validate(code)
-    
-    def _fallback_search(self, search_term: str, limit: int) -> List[Dict[str, Any]]:
-        """Fallback search when pyisic is not available"""
-        basic_data = self._get_fallback_data()
-        search_term_lower = search_term.lower()
-        
-        results = []
-        for code, title in basic_data.items():
-            if (search_term_lower in code.lower() or 
-                search_term_lower in title.lower()):
-                results.append({
-                    'code': code,
-                    'title': title,
-                    'description': title,
-                    'display': f"{code} - {title}",
-                    'full_info': f"ISIC {code}: {title}",
-                    'version': 'ISIC4',
-                    'level': 'N/A'
-                })
-                
-                if len(results) >= limit:
-                    break
-        
-        return results
-    
-    def _fallback_get_details(self, code: str) -> Optional[Dict[str, Any]]:
-        """Fallback get details when pyisic is not available"""
-        basic_data = self._get_fallback_data()
-        if code in basic_data:
-            return {
-                'code': code,
-                'title': basic_data[code],
-                'description': basic_data[code],
-                'version': 'ISIC4',
-                'level': 'N/A',
-                'parent': None
-            }
-        return None
-    
-    def _fallback_validate(self, code: str) -> bool:
-        """Fallback validation when pyisic is not available"""
-        basic_data = self._get_fallback_data()
-        return code in basic_data
-    
-    def _get_fallback_data(self) -> Dict[str, str]:
-        """Get comprehensive fallback ISIC data"""
-        return {
-            '0111': 'Growing of cereals (except rice), leguminous crops and oil seeds',
-            '0112': 'Growing of rice',
-            '0113': 'Growing of vegetables and melons, roots and tubers',
-            '0114': 'Growing of sugar cane',
-            '0115': 'Growing of tobacco',
-            '0116': 'Growing of fibre crops',
-            '0121': 'Growing of grapes',
-            '0122': 'Growing of tropical and subtropical fruits',
-            '0123': 'Growing of citrus fruits',
-            '0124': 'Growing of pome fruits and stone fruits',
-            '0125': 'Growing of other tree and bush fruits and nuts',
-            '0126': 'Growing of oleaginous fruits',
-            '0127': 'Growing of beverage crops',
-            '0128': 'Growing of spices, aromatic, drug and pharmaceutical crops',
-            '0129': 'Growing of other perennial crops',
-            '0130': 'Plant propagation',
-            '0141': 'Raising of cattle and buffaloes',
-            '0142': 'Raising of horses and other equines',
-            '0143': 'Raising of camels and camelids',
-            '0144': 'Raising of sheep and goats',
-            '0145': 'Raising of swine/pigs',
-            '0146': 'Raising of poultry',
-            '0149': 'Raising of other animals',
-            '0150': 'Mixed farming',
-            '0161': 'Support activities for crop production',
-            '0162': 'Support activities for animal production',
-            '0163': 'Post-harvest crop activities',
-            '0164': 'Seed processing for propagation',
-            '0170': 'Hunting, trapping and related service activities',
-            '0210': 'Silviculture and other forestry activities',
-            '0220': 'Logging',
-            '0230': 'Gathering of non-wood forest products',
-            '0240': 'Support services to forestry',
-            '0311': 'Marine fishing',
-            '0312': 'Freshwater fishing',
-            '0321': 'Marine aquaculture',
-            '0322': 'Freshwater aquaculture',
-            '0510': 'Mining of hard coal',
-            '0520': 'Mining of lignite',
-            '0610': 'Extraction of crude petroleum',
-            '0620': 'Extraction of natural gas',
-            '0710': 'Mining of iron ores',
-            '0721': 'Mining of uranium and thorium ores',
-            '0729': 'Mining of other non-ferrous metal ores',
-            '0810': 'Quarrying of stone, sand and clay',
-            '0891': 'Mining of chemical and fertilizer minerals',
-            '0892': 'Extraction of peat',
-            '0893': 'Extraction of salt',
-            '0899': 'Other mining and quarrying n.e.c.',
-            '0910': 'Support activities for petroleum and natural gas extraction',
-            '0990': 'Support activities for other mining and quarrying',
-            '1010': 'Processing and preserving of meat',
-            '1020': 'Processing and preserving of fish, crustaceans and molluscs',
-            '1030': 'Processing and preserving of fruit and vegetables',
-            '1040': 'Manufacture of vegetable and animal oils and fats',
-            '1050': 'Manufacture of dairy products',
-            '1061': 'Manufacture of grain mill products',
-            '1062': 'Manufacture of starches and starch products',
-            '1071': 'Manufacture of bakery products',
-            '1072': 'Manufacture of sugar',
-            '1073': 'Manufacture of cocoa, chocolate and sugar confectionery',
-            '1074': 'Manufacture of macaroni, noodles, couscous and similar farinaceous products',
-            '1075': 'Manufacture of prepared meals and dishes',
-            '1079': 'Manufacture of other food products n.e.c.',
-            '1080': 'Manufacture of prepared animal feeds',
-            '1101': 'Distilling, rectifying and blending of spirits',
-            '1102': 'Manufacture of wines',
-            '1103': 'Manufacture of malt liquors and malt',
-            '1104': 'Manufacture of soft drinks; production of mineral waters and other bottled waters',
-            '1200': 'Manufacture of tobacco products',
-            '1311': 'Preparation and spinning of textile fibres',
-            '1312': 'Weaving of textiles',
-            '1313': 'Finishing of textiles',
-            '1391': 'Manufacture of knitted and crocheted fabrics',
-            '1392': 'Manufacture of made-up textile articles, except apparel',
-            '1393': 'Manufacture of carpets and rugs',
-            '1394': 'Manufacture of cordage, rope, twine and netting',
-            '1399': 'Manufacture of other textiles n.e.c.',
-            '1410': 'Manufacture of wearing apparel, except fur apparel',
-            '1420': 'Manufacture of articles of fur',
-            '1430': 'Manufacture of knitted and crocheted apparel',
-            '1511': 'Tanning and dressing of leather; dressing and dyeing of fur',
-            '1512': 'Manufacture of luggage, handbags and the like, saddlery and harness',
-            '1520': 'Manufacture of footwear',
-            '1610': 'Sawmilling and planing of wood',
-            '1621': 'Manufacture of veneer sheets and wood-based panels',
-            '1622': 'Manufacture of builders carpentry and joinery',
-            '1623': 'Manufacture of wooden containers',
-            '1629': 'Manufacture of other products of wood; manufacture of articles of cork, straw and plaiting materials',
-            '1701': 'Manufacture of pulp, paper and paperboard',
-            '1702': 'Manufacture of corrugated paper and paperboard and of containers of paper and paperboard',
-            '1709': 'Manufacture of other articles of paper and paperboard',
-            '1811': 'Printing',
-            '1812': 'Service activities related to printing',
-            '1820': 'Reproduction of recorded media',
-            '1910': 'Manufacture of coke oven products',
-            '1920': 'Manufacture of refined petroleum products',
-            '2011': 'Manufacture of basic chemicals',
-            '2012': 'Manufacture of fertilizers and nitrogen compounds',
-            '2013': 'Manufacture of plastics and synthetic rubber in primary forms',
-            '2021': 'Manufacture of pesticides and other agrochemical products',
-            '2022': 'Manufacture of paints, varnishes and similar coatings, printing ink and mastics',
-            '2023': 'Manufacture of soap and detergents, cleaning and polishing preparations, perfumes and toilet preparations',
-            '2029': 'Manufacture of other chemical products n.e.c.',
-            '2030': 'Manufacture of man-made fibres',
-            '2100': 'Manufacture of pharmaceuticals, medicinal chemical and botanical products',
-            '2211': 'Manufacture of rubber tyres and tubes; retreading and rebuilding of rubber tyres',
-            '2219': 'Manufacture of other rubber products',
-            '2220': 'Manufacture of plastics products',
-            '2310': 'Manufacture of glass and glass products',
-            '2391': 'Manufacture of refractory products',
-            '2392': 'Manufacture of clay building materials',
-            '2393': 'Manufacture of other porcelain and ceramic products',
-            '2394': 'Manufacture of cement, lime and plaster',
-            '2395': 'Manufacture of articles of concrete, cement and plaster',
-            '2396': 'Cutting, shaping and finishing of stone',
-            '2399': 'Manufacture of other non-metallic mineral products n.e.c.',
-            '2410': 'Manufacture of basic iron and steel',
-            '2420': 'Manufacture of basic precious and other non-ferrous metals',
-            '2431': 'Casting of iron and steel',
-            '2432': 'Casting of non-ferrous metals',
-            '2511': 'Manufacture of structural metal products',
-            '2512': 'Manufacture of tanks, reservoirs and containers of metal',
-            '2513': 'Manufacture of steam generators, except central heating hot water boilers',
-            '2520': 'Manufacture of weapons and ammunition',
-            '2591': 'Forging, pressing, stamping and roll-forming of metal; powder metallurgy',
-            '2592': 'Treatment and coating of metals; machining',
-            '2593': 'Manufacture of cutlery, hand tools and general hardware',
-            '2599': 'Manufacture of other fabricated metal products n.e.c.',
-            '2610': 'Manufacture of electronic components and boards',
-            '2620': 'Manufacture of computers and peripheral equipment',
-            '2630': 'Manufacture of communication equipment',
-            '2640': 'Manufacture of consumer electronics',
-            '2651': 'Manufacture of measuring, testing, navigating and control equipment',
-            '2652': 'Manufacture of watches and clocks',
-            '2660': 'Manufacture of irradiation, electromedical and electrotherapeutic equipment',
-            '2670': 'Manufacture of optical instruments and photographic equipment',
-            '2680': 'Manufacture of magnetic and optical media',
-            '2710': 'Manufacture of electric motors, generators, transformers and electricity distribution and control apparatus',
-            '2720': 'Manufacture of batteries and accumulators',
-            '2731': 'Manufacture of fibre optic cables',
-            '2732': 'Manufacture of other electronic and electric wires and cables',
-            '2733': 'Manufacture of wiring devices',
-            '2740': 'Manufacture of electric lighting equipment',
-            '2750': 'Manufacture of domestic appliances',
-            '2790': 'Manufacture of other electrical equipment',
-            '2811': 'Manufacture of engines and turbines, except aircraft, vehicle and cycle engines',
-            '2812': 'Manufacture of fluid power equipment',
-            '2813': 'Manufacture of other pumps, compressors, taps and valves',
-            '2814': 'Manufacture of bearings, gears, gearing and driving elements',
-            '2815': 'Manufacture of ovens, furnaces and furnace burners',
-            '2816': 'Manufacture of lifting and handling equipment',
-            '2817': 'Manufacture of office machinery and equipment (except computers and peripheral equipment)',
-            '2818': 'Manufacture of power-driven hand tools',
-            '2819': 'Manufacture of other general-purpose machinery',
-            '2821': 'Manufacture of agricultural and forestry machinery',
-            '2822': 'Manufacture of metal-forming machinery and machine tools',
-            '2823': 'Manufacture of machinery for metallurgy',
-            '2824': 'Manufacture of machinery for mining, quarrying and construction',
-            '2825': 'Manufacture of machinery for food, beverage and tobacco processing',
-            '2826': 'Manufacture of machinery for textile, apparel and leather production',
-            '2829': 'Manufacture of other special-purpose machinery',
-            '2910': 'Manufacture of motor vehicles',
-            '2920': 'Manufacture of bodies (coachwork) for motor vehicles; manufacture of trailers and semi-trailers',
-            '2930': 'Manufacture of parts and accessories for motor vehicles',
-            '3011': 'Building of ships and floating structures',
-            '3012': 'Building of pleasure and sporting boats',
-            '3020': 'Manufacture of railway locomotives and rolling stock',
-            '3030': 'Manufacture of air and spacecraft and related machinery',
-            '3040': 'Manufacture of military fighting vehicles',
-            '3091': 'Manufacture of motorcycles',
-            '3092': 'Manufacture of bicycles and invalid carriages',
-            '3099': 'Manufacture of other transport equipment n.e.c.',
-            '3100': 'Manufacture of furniture',
-            '3211': 'Manufacture of jewellery and related articles',
-            '3212': 'Manufacture of imitation jewellery and related articles',
-            '3220': 'Manufacture of musical instruments',
-            '3230': 'Manufacture of sports goods',
-            '3240': 'Manufacture of games and toys',
-            '3250': 'Manufacture of medical and dental instruments and supplies',
-            '3290': 'Other manufacturing n.e.c.',
-            '3311': 'Repair of fabricated metal products',
-            '3312': 'Repair of machinery',
-            '3313': 'Repair of electronic and optical equipment',
-            '3314': 'Repair of electrical equipment',
-            '3315': 'Repair of transport equipment, except motor vehicles',
-            '3319': 'Repair of other equipment',
-            '3320': 'Installation of industrial machinery and equipment',
-            '3510': 'Electric power generation, transmission and distribution',
-            '3520': 'Manufacture of gas; distribution of gaseous fuels through mains',
-            '3530': 'Steam and air conditioning supply',
-            '3600': 'Water collection, treatment and supply',
-            '3700': 'Sewerage',
-            '3811': 'Collection of non-hazardous waste',
-            '3812': 'Collection of hazardous waste',
-            '3821': 'Treatment and disposal of non-hazardous waste',
-            '3822': 'Treatment and disposal of hazardous waste',
-            '3830': 'Materials recovery',
-            '3900': 'Remediation activities and other waste management services',
-            '4110': 'Development of building projects',
-            '4120': 'Construction of buildings',
-            '4210': 'Construction of roads and railways',
-            '4220': 'Construction of utility projects',
-            '4290': 'Construction of other civil engineering projects',
-            '4311': 'Demolition',
-            '4312': 'Site preparation',
-            '4321': 'Electrical installation',
-            '4322': 'Plumbing, heat and air-conditioning installation',
-            '4329': 'Other construction installation',
-            '4330': 'Building completion and finishing',
-            '4390': 'Other specialized construction activities',
-            '4510': 'Sale of motor vehicles',
-            '4520': 'Maintenance and repair of motor vehicles',
-            '4530': 'Sale of motor vehicle parts and accessories',
-            '4540': 'Sale, maintenance and repair of motorcycles and related parts and accessories',
-            '4610': 'Wholesale on a fee or contract basis',
-            '4620': 'Wholesale of agricultural raw materials and live animals',
-            '4630': 'Wholesale of food, beverages and tobacco',
-            '4641': 'Wholesale of textiles, clothing and footwear',
-            '4649': 'Wholesale of other household goods',
-            '4651': 'Wholesale of computers, computer peripheral equipment and software',
-            '4652': 'Wholesale of electronic and telecommunications equipment and parts',
-            '4653': 'Wholesale of agricultural machinery, equipment and supplies',
-            '4659': 'Wholesale of other machinery and equipment',
-            '4661': 'Wholesale of solid, liquid and gaseous fuels and related products',
-            '4662': 'Wholesale of metals and metal ores',
-            '4663': 'Wholesale of construction materials, hardware, plumbing and heating equipment and supplies',
-            '4669': 'Wholesale of waste and scrap and other products n.e.c.',
-            '4690': 'Non-specialized wholesale trade',
-            '4711': 'Retail sale in non-specialized stores with food, beverages or tobacco predominating',
-            '4719': 'Other retail sale in non-specialized stores',
-            '4721': 'Retail sale of food in specialized stores',
-            '4722': 'Retail sale of beverages in specialized stores',
-            '4723': 'Retail sale of tobacco products in specialized stores',
-            '4730': 'Retail sale of automotive fuel in specialized stores',
-            '4741': 'Retail sale of computers, peripheral units, software and telecommunications equipment in specialized stores',
-            '4742': 'Retail sale of audio and video equipment in specialized stores',
-            '4751': 'Retail sale of textiles in specialized stores',
-            '4752': 'Retail sale of hardware, paints and glass in specialized stores',
-            '4753': 'Retail sale of carpets, rugs, wall and floor coverings in specialized stores',
-            '4759': 'Retail sale of electrical household appliances, furniture, lighting equipment and other household articles in specialized stores',
-            '4761': 'Retail sale of books, newspapers and stationary in specialized stores',
-            '4762': 'Retail sale of music and video recordings in specialized stores',
-            '4763': 'Retail sale of sporting equipment in specialized stores',
-            '4764': 'Retail sale of games and toys in specialized stores',
-            '4771': 'Retail sale of clothing, footwear and leather articles in specialized stores',
-            '4772': 'Retail sale of pharmaceutical and medical goods, cosmetic and toilet articles in specialized stores',
-            '4773': 'Other retail sale of new goods in specialized stores',
-            '4774': 'Retail sale of second-hand goods',
-            '4781': 'Retail sale via stalls and markets of food, beverages and tobacco products',
-            '4782': 'Retail sale via stalls and markets of textiles, clothing and footwear',
-            '4789': 'Retail sale via stalls and markets of other goods',
-            '4791': 'Retail sale via mail order houses or via Internet',
-            '4799': 'Other retail sale not in stores, stalls or markets',
-            '4911': 'Passenger rail transport, interurban',
-            '4912': 'Freight rail transport',
-            '4921': 'Urban and suburban passenger land transport',
-            '4922': 'Other passenger land transport',
-            '4923': 'Freight transport by road',
-            '4930': 'Transport via pipeline',
-            '5011': 'Sea and coastal passenger water transport',
-            '5012': 'Sea and coastal freight water transport',
-            '5021': 'Inland passenger water transport',
-            '5022': 'Inland freight water transport',
-            '5110': 'Passenger air transport',
-            '5120': 'Freight air transport',
-            '5210': 'Warehousing and storage',
-            '5221': 'Service activities incidental to land transportation',
-            '5222': 'Service activities incidental to water transportation',
-            '5223': 'Service activities incidental to air transportation',
-            '5224': 'Cargo handling',
-            '5229': 'Other transportation support activities',
-            '5310': 'Postal activities',
-            '5320': 'Courier activities',
-            '5510': 'Short term accommodation activities',
-            '5520': 'Camping grounds, recreational vehicle parks and trailer parks',
-            '5590': 'Other accommodation',
-            '5610': 'Restaurants and mobile food service activities',
-            '5621': 'Event catering',
-            '5629': 'Other food service activities',
-            '5630': 'Beverage serving activities',
-            '5811': 'Book publishing',
-            '5812': 'Publishing of directories and mailing lists',
-            '5813': 'Publishing of newspapers, journals and periodicals',
-            '5819': 'Other publishing activities',
-            '5820': 'Software publishing',
-            '5911': 'Motion picture, video and television programme production activities',
-            '5912': 'Motion picture, video and television programme post-production activities',
-            '5913': 'Motion picture, video and television programme distribution activities',
-            '5914': 'Motion picture projection activities',
-            '5920': 'Sound recording and music publishing activities',
-            '6010': 'Radio broadcasting',
-            '6020': 'Television programming and broadcasting activities',
-            '6110': 'Wired telecommunications activities',
-            '6120': 'Wireless telecommunications activities',
-            '6130': 'Satellite telecommunications activities',
-            '6190': 'Other telecommunications activities',
-            '6201': 'Computer programming activities',
-            '6202': 'Computer consultancy activities',
-            '6209': 'Other information technology and computer service activities',
-            '6311': 'Data processing, hosting and related activities',
-            '6312': 'Web portals',
-            '6391': 'News agency activities',
-            '6399': 'Other information service activities n.e.c.',
-            '6411': 'Central banking',
-            '6419': 'Other monetary intermediation',
-            '6420': 'Activities of holding companies',
-            '6430': 'Trusts, funds and similar financial entities',
-            '6491': 'Financial leasing',
-            '6492': 'Other credit granting',
-            '6499': 'Other financial service activities, except insurance and pension funding n.e.c.',
-            '6511': 'Life insurance',
-            '6512': 'Non-life insurance',
-            '6520': 'Reinsurance',
-            '6530': 'Pension funding',
-            '6611': 'Administration of financial markets',
-            '6612': 'Security and commodity contracts brokerage',
-            '6619': 'Other activities auxiliary to financial service activities',
-            '6621': 'Risk and damage evaluation',
-            '6622': 'Activities of insurance agents and brokers',
-            '6629': 'Other activities auxiliary to insurance and pension funding',
-            '6630': 'Fund management activities',
-            '6810': 'Real estate activities with own or leased property',
-            '6820': 'Real estate activities on a fee or contract basis',
-            '6910': 'Legal activities',
-            '6920': 'Accounting, bookkeeping and auditing activities; tax consultancy',
-            '7010': 'Activities of head offices',
-            '7020': 'Management consultancy activities',
-            '7110': 'Architectural and engineering activities and related technical consultancy',
-            '7120': 'Technical testing and analysis',
-            '7210': 'Research and experimental development on natural sciences and engineering',
-            '7220': 'Research and experimental development on social sciences and humanities',
-            '7310': 'Advertising',
-            '7320': 'Market research and public opinion polling',
-            '7410': 'Specialized design activities',
-            '7420': 'Photographic activities',
-            '7490': 'Other professional, scientific and technical activities n.e.c.',
-            '7500': 'Veterinary activities',
-            '7710': 'Renting and leasing of motor vehicles',
-            '7721': 'Renting and leasing of recreational and sports goods',
-            '7722': 'Renting of video tapes and disks',
-            '7729': 'Renting and leasing of other personal and household goods',
-            '7730': 'Renting and leasing of other machinery, equipment and tangible goods',
-            '7740': 'Leasing of intellectual property and similar products, except copyrighted works',
-            '7810': 'Activities of employment placement agencies',
-            '7820': 'Temporary employment agency activities',
-            '7830': 'Other human resources provision',
-            '7911': 'Travel agency activities',
-            '7912': 'Tour operator activities',
-            '7990': 'Other reservation service and related activities',
-            '8010': 'Private security activities',
-            '8020': 'Security systems service activities',
-            '8030': 'Investigation activities',
-            '8110': 'Combined facilities support activities',
-            '8121': 'General cleaning of buildings',
-            '8129': 'Other building and industrial cleaning activities',
-            '8130': 'Landscape care and maintenance service activities',
-            '8211': 'Combined office administrative service activities',
-            '8219': 'Photocopying, document preparation and other specialized office support activities',
-            '8220': 'Activities of call centres',
-            '8230': 'Organization of conventions and trade shows',
-            '8291': 'Activities of collection agencies and credit bureaus',
-            '8292': 'Packaging activities',
-            '8299': 'Other business support service activities n.e.c.',
-            '8411': 'General public administration activities',
-            '8412': 'Regulation of the activities of providing health care, education, cultural services and other social services, excluding social security',
-            '8413': 'Regulation of and contribution to more efficient operation of businesses',
-            '8421': 'Foreign affairs',
-            '8422': 'Defence activities',
-            '8423': 'Public order and safety activities',
-            '8430': 'Compulsory social security activities',
-            '8510': 'Pre-primary education',
-            '8520': 'Primary education',
-            '8530': 'Secondary education',
-            '8541': 'Post-secondary non-tertiary education',
-            '8542': 'Tertiary education',
-            '8550': 'Other education',
-            '8560': 'Educational support activities',
-            '8610': 'Hospital activities',
-            '8620': 'Medical and dental practice activities',
-            '8690': 'Other human health activities',
-            '8710': 'Residential nursing care facilities',
-            '8720': 'Residential care activities for mental retardation, mental health and substance abuse',
-            '8730': 'Residential care activities for the elderly and disabled',
-            '8790': 'Other residential care activities',
-            '8810': 'Social work activities without accommodation for the elderly and disabled',
-            '8890': 'Other social work activities without accommodation',
-            '9000': 'Creative, arts and entertainment activities',
-            '9101': 'Library and archives activities',
-            '9102': 'Museums activities and operation of historical sites and buildings',
-            '9103': 'Botanical and zoological gardens and nature reserves activities',
-            '9200': 'Gambling and betting activities',
-            '9311': 'Operation of sports facilities',
-            '9312': 'Activities of sports clubs',
-            '9319': 'Other sports activities',
-            '9321': 'Activities of amusement parks and theme parks',
-            '9329': 'Other amusement and recreation activities',
-            '9411': 'Activities of business and employers membership organizations',
-            '9412': 'Activities of professional membership organizations',
-            '9420': 'Activities of trade unions',
-            '9491': 'Activities of religious organizations',
-            '9492': 'Activities of political organizations',
-            '9499': 'Activities of other membership organizations n.e.c.',
-            '9511': 'Repair of computers and peripheral equipment',
-            '9512': 'Repair of communication equipment',
-            '9521': 'Repair of consumer electronics',
-            '9522': 'Repair of household appliances and home and garden equipment',
-            '9523': 'Repair of footwear and leather goods',
-            '9524': 'Repair of furniture and home furnishings',
-            '9529': 'Repair of other personal and household goods',
-            '9601': 'Washing and (dry-) cleaning of textile and fur products',
-            '9602': 'Hairdressing and other beauty treatment',
-            '9603': 'Funeral and related activities',
-            '9609': 'Other personal service activities n.e.c.',
-            '9700': 'Activities of households as employers of domestic personnel',
-            '9810': 'Undifferentiated goods-producing activities of private households for own use',
-            '9820': 'Undifferentiated service-producing activities of private households for own use',
-            '9900': 'Activities of extraterritorial organizations and bodies'
-        }
-
-# Enhanced ISIC data management for SQLite Cloud
-@st.cache_data
-def load_isic_dataframe():
-    """Load ISIC data from Excel file and return as DataFrame"""
-    excel_files = [
-        "Complete_ISIC5_Structure_16Dec2022final.xlsx",
-        "ISIC_Codes.xlsx", 
-        "isic_codes.xlsx",
-        "Complete_ISIC5.xlsx",
-        "ISIC_4.xlsx",
-        "isic_data.xlsx"
-    ]
-    
-    for filename in excel_files:
-        if os.path.exists(filename):
-            try:
-                df = pd.read_excel(filename)
-                st.success(f"✅ ISIC database loaded from: {filename}")
-                
-                # Cache the data in SQLite Cloud
-                cache_isic_data(df)
-                return df
-            except Exception as e:
-                st.warning(f"Could not load {filename}: {str(e)}")
-                continue
-    
-    # If no file found, try to load from cache
-    return load_isic_from_cache()
-
-def cache_isic_data(df):
-    """Cache ISIC data in SQLite Cloud for faster access"""
-    try:
-        # Clear existing cache
-        execute_query("DELETE FROM isic_cache")
-        
-        # Insert new data
-        insert_data = []
-        for _, row in df.iterrows():
-            code_col = next((col for col in ['Code', 'CODE', 'code'] if col in df.columns), None)
-            title_col = next((col for col in ['Title', 'TITLE', 'title'] if col in df.columns), None)
-            
-            if code_col and title_col:
-                code = str(row[code_col]) if pd.notna(row[code_col]) else None
-                title = str(row[title_col]) if pd.notna(row[title_col]) else ""
-                description = title
-                
-                if code:
-                    current_time = datetime.now().isoformat()
-                    insert_data.append((code, title, description, 'General', current_time))
-        
-        # Batch insert
-        if insert_data:
-            execute_many(
-                "INSERT INTO isic_cache (code, title, description, category, last_updated) VALUES (?, ?, ?, ?, ?)",
-                insert_data
-            )
-            st.success(f"✅ Cached {len(insert_data)} ISIC codes in database")
-        
-    except Exception as e:
-        st.warning(f"Could not cache ISIC data: {str(e)}")
-
-def load_isic_from_cache():
-    """Load ISIC data from SQLite Cloud cache"""
-    try:
-        result = execute_query("SELECT code, title, description FROM isic_cache", return_result=True)
-        if result and isinstance(result, tuple) and result[0]:
-            result_data, columns = result
-            df = pd.DataFrame(result_data, columns=columns)
-            
-            if not df.empty:
-                st.info("📁 Loaded ISIC data from cache")
-                return df
-            else:
-                st.warning("No ISIC data available in cache. Using basic codes.")
-                return create_basic_isic_data()
-        else:
-            st.warning("No ISIC data available. Using basic codes.")
-            return create_basic_isic_data()
-    except Exception as e:
-        st.warning(f"Error loading ISIC cache: {str(e)}")
-        return create_basic_isic_data()
-
-def create_basic_isic_data():
-    """Create basic ISIC data structure"""
-    basic_data = {
-        'Code': ['0111', '0112', '0113', '0114', '0115', '0116', '0121', '0122', 
-                '4100', '4101', '4102', '4310', '4311', '4312', '4320', '4321',
-                '4610', '4620', '4630', '4651', '4652', '4661', '4662'],
-        'Title': [
-            'Growing of cereals (except rice), leguminous crops and oil seeds',
-            'Growing of rice',
-            'Growing of vegetables and melons, roots and tubers',
-            'Growing of sugar cane',
-            'Growing of tobacco',
-            'Growing of fibre crops',
-            'Growing of grapes',
-            'Growing of tropical and subtropical fruits',
-            'Construction of buildings',
-            'Construction of residential buildings',
-            'Construction of non-residential buildings',
-            'Demolition and site preparation',
-            'Demolition',
-            'Site preparation',
-            'Electrical, plumbing and other construction installation activities',
-            'Electrical installation',
-            'Wholesale on a fee or contract basis',
-            'Wholesale of agricultural raw materials and live animals',
-            'Wholesale of food, beverages and tobacco',
-            'Wholesale of computers, computer peripheral equipment and software',
-            'Wholesale of electronic and telecommunications equipment and parts',
-            'Wholesale of agricultural machinery, equipment and supplies',
-            'Wholesale of construction machinery, equipment and supplies'
-        ]
-    }
-    return pd.DataFrame(basic_data)
-
-def search_isic_codes_enhanced(search_term, isic_df):
-    """Enhanced ISIC search with multiple matching strategies"""
-    if isic_df is None or not search_term:
-        return []
-    
-    search_term = str(search_term).strip().lower()
-    
-    try:
-        # Try different column combinations
-        code_col = next((col for col in ['Code', 'CODE', 'code'] if col in isic_df.columns), None)
-        title_col = next((col for col in ['Title', 'TITLE', 'title', 'Description', 'DESCRIPTION'] if col in isic_df.columns), None)
-        
-        if not code_col or not title_col:
-            return []
-        
-        # Multiple search strategies
-        exact_code_matches = isic_df[isic_df[code_col].astype(str).str.lower() == search_term]
-        code_contains = isic_df[isic_df[code_col].astype(str).str.lower().str.contains(search_term, na=False)]
-        title_contains = isic_df[isic_df[title_col].astype(str).str.lower().str.contains(search_term, na=False)]
-        
-        # Combine results
-        results = pd.concat([exact_code_matches, code_contains, title_contains]).drop_duplicates()
-        
-        formatted_results = []
-        for _, row in results.iterrows():
-            code = str(row[code_col]).strip()
-            title = str(row[title_col]).strip()
-            if code and title:
-                formatted_results.append({
-                    'code': code,
-                    'title': title,
-                    'display': f"{code} - {title}",
-                    'full_info': f"ISIC {code}: {title}"
-                })
-        
-        return formatted_results[:20]  # Limit results
-        
-    except Exception as e:
-        st.error(f"Search error: {str(e)}")
-        return []
-
-# Enhanced Business Activities with ISIC Integration for SQLite Cloud
-def business_activities_section():
-    """Enhanced business activities section with ISIC integration"""
-    
-    st.subheader("🏢 Business Activities & ISIC Classification")
-    
-    # Two-column layout for better organization
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        st.write("**Describe your main business activities:**")
-        business_activities = st.text_area(
-            "Business Activities Description *",
-            value=st.session_state.business_activities_text,
-            placeholder="Describe your main business activities, products, and services in detail...",
-            height=120,
-            key="business_activities_desc"
-        )
-        st.session_state.business_activities_text = business_activities
-    
-    with col2:
-        st.write("**💡 Tips:**")
-        st.write("• Be specific about products/services")
-        st.write("• Include all major revenue streams")
-        st.write("• Mention any specialized activities")
-    
-    # ISIC Code Selection Section
-    st.subheader("📊 ISIC Code Classification")
-    
-    # Enhanced ISIC search and selection
-    search_term = st.text_input(
-        "🔍 Search ISIC codes by code or description:",
-        placeholder="e.g., agriculture, construction, 0111, manufacturing",
-        key="isic_search_main",
-        value=st.session_state.isic_search_term
-    )
-    
-    # Update search term in session state
-    if search_term != st.session_state.isic_search_term:
-        st.session_state.isic_search_term = search_term
-    
-    # Display search results automatically when there's a search term
-    if st.session_state.isic_search_term and st.session_state.isic_df is not None:
-        with st.spinner("Searching ISIC codes..."):
-            search_results = search_isic_codes_enhanced(
-                st.session_state.isic_search_term, 
-                st.session_state.isic_df
-            )
-        
-        if search_results:
-            st.write(f"📋 Found {len(search_results)} matching ISIC codes:")
-            
-            # Display results in a compact format
-            for i, result in enumerate(search_results):
-                col1, col2, col3 = st.columns([3, 1, 1])
-                
-                with col1:
-                    st.write(f"**{result['code']}** - {result['title']}")
-                
-                with col2:
-                    if st.button("➕ Select", key=f"select_{i}"):
-                        if result['display'] not in st.session_state.selected_isic_codes:
-                            st.session_state.selected_isic_codes.append(result['display'])
-                            # Auto-update business activities text
-                            current_activities = st.session_state.business_activities_text
-                            new_activity = f"{result['title']} (ISIC: {result['code']})"
-                            if current_activities:
-                                st.session_state.business_activities_text = current_activities + "; " + new_activity
-                            else:
-                                st.session_state.business_activities_text = new_activity
-                            st.rerun()
-                
-                with col3:
-                    if st.button("ℹ️ Info", key=f"info_{i}"):
-                        st.info(f"**ISIC {result['code']}**: {result['title']}")
-            
-            st.markdown("---")
-        elif st.session_state.isic_search_term:  # Only show warning if there was a search term but no results
-            st.warning("No ISIC codes found. Try different search terms.")
-    
-    # Manual ISIC code entry
-    with st.expander("➕ Add Custom ISIC Code", expanded=False):
-        manual_col1, manual_col2, manual_col3 = st.columns([2, 2, 1])
-        
-        with manual_col1:
-            custom_code = st.text_input("ISIC Code:", placeholder="e.g., 0111", key="custom_code_input")
-        
-        with manual_col2:
-            custom_description = st.text_input("Description:", placeholder="e.g., Growing of cereals", key="custom_desc_input")
-        
-        with manual_col3:
-            st.write("")  # Spacer
-            st.write("")  # Spacer
-            if st.button("Add Custom", key="add_custom_isic"):
-                if custom_code and custom_description:
-                    custom_display = f"{custom_code} - {custom_description}"
-                    if custom_display not in st.session_state.selected_isic_codes:
-                        st.session_state.selected_isic_codes.append(custom_display)
-                        st.success(f"Added custom ISIC code: {custom_code}")
-                        st.rerun()
-    
-    # Display selected ISIC codes
-    if st.session_state.selected_isic_codes:
-        st.subheader("✅ Selected ISIC Codes")
-        
-        # Group codes by category for better organization
-        agri_codes = [code for code in st.session_state.selected_isic_codes if any(x in code for x in ['01', '02', '03'])]
-        construction_codes = [code for code in st.session_state.selected_isic_codes if any(x in code for x in ['41', '42', '43'])]
-        other_codes = [code for code in st.session_state.selected_isic_codes if code not in agri_codes + construction_codes]
-        
-        if agri_codes:
-            with st.expander("🌾 Agriculture Codes", expanded=True):
-                for i, code in enumerate(agri_codes):
-                    display_selected_isic_code(code, i, "agri")
-        
-        if construction_codes:
-            with st.expander("🏗️ Construction Codes", expanded=True):
-                for i, code in enumerate(construction_codes):
-                    display_selected_isic_code(code, i, "constr")
-        
-        if other_codes:
-            with st.expander("📦 Other Codes", expanded=True):
-                for i, code in enumerate(other_codes):
-                    display_selected_isic_code(code, i, "other")
-        
-        # Summary
-        st.info(f"**Total ISIC codes selected:** {len(st.session_state.selected_isic_codes)}")
-    
-    return business_activities
-
-def display_selected_isic_code(code, index, prefix):
-    """Display a selected ISIC code with remove option"""
-    col1, col2 = st.columns([4, 1])
-    
-    with col1:
-        st.write(f"• {code}")
-    
-    with col2:
-        if st.button("🗑️", key=f"remove_{prefix}_{index}"):
-            st.session_state.selected_isic_codes.pop(index)
-            st.rerun()
 
 # Initialize database - FIXED VERSION
 def init_db():
@@ -1581,6 +322,45 @@ def add_missing_columns():
     except Exception as e:
         st.warning(f"Database schema update: {str(e)}")
         return False
+
+# Enhanced session state initialization
+def initialize_session_state():
+    defaults = {
+        'custom_procedures': [],
+        'custom_authorities': [],
+        'procedures_list': [],
+        'current_section': 'A',
+        'current_interview_id': None,
+        'form_data': {},
+        'selected_isic_codes': [],
+        'manual_isic_input': "",
+        'selected_isic_for_business': "",
+        'isic_search_term': "",
+        'show_detailed_form': False,
+        'use_template': False,
+        'interview_start_time': None,
+        'active_procedure_index': None,
+        'district_specific_notes': {},
+        'isic_df': None,
+        'business_activities_text': "",
+        'bulk_procedure_mode': False,
+        'quick_manual_mode': False,
+        'admin_logged_in': False,
+        'interviewer_logged_in': False,
+        'current_user': None,
+        'user_role': None,
+        'app_mode': 'login',
+        'database_initialized': False
+    }
+    
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+# Application modes
+APPLICATION_MODES = ["Entirely In-Person", "Mixed", "Entirely Online"]
+DISTRICTS = ["Lusaka", "Kitwe", "Kasama", "Ndola", "Livingstone", "Other (Please specify)"]
+INTERVIEWERS = list(INTERVIEWER_CREDENTIALS.keys())
 
 # Database functions
 def save_draft(data, interview_id=None):
@@ -2145,6 +925,57 @@ def display_section_a():
     # ISIC Code section
     st.markdown("---")
     business_activities_section()
+
+def business_activities_section():
+    """Business activities section with ISIC integration"""
+    st.subheader("🏢 Business Activities & ISIC Classification")
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.write("**Describe your main business activities:**")
+        business_activities = st.text_area(
+            "Business Activities Description *",
+            value=st.session_state.business_activities_text,
+            placeholder="Describe your main business activities, products, and services in detail...",
+            height=120,
+            key="business_activities_desc"
+        )
+        st.session_state.business_activities_text = business_activities
+    
+    with col2:
+        st.write("**💡 Tips:**")
+        st.write("• Be specific about products/services")
+        st.write("• Include all major revenue streams")
+        st.write("• Mention any specialized activities")
+    
+    # ISIC Code Selection
+    st.subheader("📊 ISIC Code Classification")
+    
+    search_term = st.text_input(
+        "🔍 Search ISIC codes by code or description:",
+        placeholder="e.g., agriculture, construction, 0111, manufacturing",
+        key="isic_search_main",
+        value=st.session_state.isic_search_term
+    )
+    
+    if search_term != st.session_state.isic_search_term:
+        st.session_state.isic_search_term = search_term
+    
+    # Display selected ISIC codes
+    if st.session_state.selected_isic_codes:
+        st.subheader("✅ Selected ISIC Codes")
+        
+        for i, code in enumerate(st.session_state.selected_isic_codes):
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                st.write(f"• {code}")
+            with col2:
+                if st.button("🗑️", key=f"remove_isic_{i}"):
+                    st.session_state.selected_isic_codes.pop(i)
+                    st.rerun()
+    
+    return business_activities
 
 # Section B - Registration & Licensing
 def enhanced_section_b():
@@ -2909,224 +1740,55 @@ def show_completion_actions():
             st.session_state.current_section = 'Dashboard'
             st.rerun()
 
-# Main application function
-def main():
-    """Main application function"""
-    
-    # Display login or main app
-    if not st.session_state.logged_in:
-        display_login()
-    else:
-        display_main_app()
+def reset_interview():
+    """Reset the interview"""
+    st.session_state.current_interview_id = None
+    st.session_state.form_data = {}
+    st.session_state.procedures_list = []
+    st.session_state.selected_isic_codes = []
+    st.session_state.business_activities_text = ""
+    st.session_state.current_section = 'A'
+    st.success("🔄 New interview started!")
+    st.rerun()
 
-def display_login():
-    """Display login interface"""
-    st.title("🇿🇲 Zambia Regulatory Compliance Survey")
-    st.markdown("---")
+# Admin Navigation
+def admin_navigation():
+    """Admin navigation"""
+    st.sidebar.title("🔧 Admin Panel")
+    st.sidebar.write(f"Logged in as: **{st.session_state.current_user}**")
+    st.sidebar.write(f"Role: **{st.session_state.user_role}**")
     
-    tab1, tab2 = st.tabs(["📝 Interviewer Login", "👨‍💼 Admin/Researcher Login"])
+    if st.sidebar.button("🚪 Logout", use_container_width=True, key="admin_logout_btn"):
+        logout()
     
-    with tab1:
-        st.subheader("Interviewer Access")
-        interviewer = st.selectbox("Select Interviewer", INTERVIEWERS)
-        password = st.text_input("Password", type="password", key="interviewer_pwd")
-        
-        if st.button("Login as Interviewer", type="primary", use_container_width=True):
-            if (interviewer in INTERVIEWER_CREDENTIALS and 
-                password == INTERVIEWER_CREDENTIALS[interviewer]["password"]):
-                st.session_state.logged_in = True
-                st.session_state.current_user = interviewer
-                st.session_state.user_role = "interviewer"
-                st.session_state.interviewer_logged_in = True
-                st.success(f"✅ Welcome {interviewer}!")
-                st.rerun()
-            else:
-                st.error("❌ Invalid credentials")
+    st.sidebar.markdown("---")
     
-    with tab2:
-        st.subheader("Admin/Researcher Access")
-        admin_user = st.text_input("Username", key="admin_user")
-        admin_password = st.text_input("Password", type="password", key="admin_pwd")
-        
-        if st.button("Login as Admin/Researcher", type="primary", use_container_width=True):
-            if (admin_user in ADMIN_CREDENTIALS and 
-                admin_password == ADMIN_CREDENTIALS[admin_user]["password"]):
-                st.session_state.logged_in = True
-                st.session_state.current_user = admin_user
-                st.session_state.user_role = ADMIN_CREDENTIALS[admin_user]["role"]
-                st.session_state.admin_logged_in = True
-                st.success(f"✅ Welcome {admin_user}!")
-                st.rerun()
-            else:
-                st.error("❌ Invalid credentials")
-
-def display_main_app():
-    """Display main application after login"""
+    menu_options = {
+        'Dashboard': '📊',
+        'Data Management': '💾', 
+        'Edit_Interviews': '✏️',
+        'Analytics': '📈',
+        'User Management': '👥',
+        'System Tools': '🛠️'
+    }
     
-    # Sidebar navigation
-    with st.sidebar:
-        st.title(f"Welcome, {st.session_state.current_user}!")
-        st.markdown(f"*Role: {st.session_state.user_role}*")
-        st.markdown("---")
-        
-        # Navigation based on user role
-        if st.session_state.interviewer_logged_in:
-            st.subheader("📋 Survey Navigation")
-            
-            nav_options = [
-                "🏠 Dashboard",
-                "📝 Section A: Business Information",
-                "📊 Section B: Regulatory Procedures", 
-                "⏱️ Section C: Compliance Time & Cost",
-                "💡 Section D: Reform Priorities",
-                "📋 Draft Management"
-            ]
-            
-            selected_nav = st.radio("Go to:", nav_options)
-            
-            # Map navigation to sections
-            if selected_nav == "🏠 Dashboard":
-                st.session_state.current_section = 'Dashboard'
-            elif selected_nav == "📝 Section A: Business Information":
-                st.session_state.current_section = 'A'
-            elif selected_nav == "📊 Section B: Regulatory Procedures":
-                st.session_state.current_section = 'B'
-            elif selected_nav == "⏱️ Section C: Compliance Time & Cost":
-                st.session_state.current_section = 'C'
-            elif selected_nav == "💡 Section D: Reform Priorities":
-                st.session_state.current_section = 'D'
-            elif selected_nav == "📋 Draft Management":
-                st.session_state.current_section = 'Draft_Dashboard'
-        
-        elif st.session_state.admin_logged_in:
-            st.subheader("👨‍💼 Admin Navigation")
-            
-            admin_nav_options = [
-                "📊 Data Overview",
-                "👥 Interviewer Management", 
-                "📋 Draft Management",
-                "📈 Analytics & Reports",
-                "⚙️ System Settings"
-            ]
-            
-            selected_admin_nav = st.radio("Go to:", admin_nav_options)
-            
-            # Map admin navigation
-            if selected_admin_nav == "📊 Data Overview":
-                st.session_state.current_section = 'Admin_Dashboard'
-            elif selected_admin_nav == "👥 Interviewer Management":
-                st.session_state.current_section = 'Admin_Interviewers'
-            elif selected_admin_nav == "📋 Draft Management":
-                st.session_state.current_section = 'Draft_Dashboard'
-            elif selected_admin_nav == "📈 Analytics & Reports":
-                st.session_state.current_section = 'Admin_Analytics'
-            elif selected_admin_nav == "⚙️ System Settings":
-                st.session_state.current_section = 'Admin_Settings'
-        
-        # Quick draft access for interviewers
-        if st.session_state.interviewer_logged_in:
-            display_draft_quick_access()
-        
-        # Logout button
-        st.markdown("---")
-        if st.button("🚪 Logout", use_container_width=True):
-            st.session_state.logged_in = False
-            st.session_state.current_user = None
-            st.session_state.user_role = None
-            st.session_state.interviewer_logged_in = False
-            st.session_state.admin_logged_in = False
-            reset_interview()
-            st.rerun()
+    selected_menu = st.sidebar.radio("Menu", list(menu_options.keys()), 
+                                   format_func=lambda x: f"{menu_options[x]} {x.replace('_', ' ')}",
+                                   key="admin_menu")
     
-    # Main content area
-    if st.session_state.current_section == 'Dashboard':
-        display_dashboard()
-    elif st.session_state.current_section == 'A':
-        display_section_a()
-    elif st.session_state.current_section == 'B':
-        enhanced_section_b()
-    elif st.session_state.current_section == 'C':
-        display_section_c()
-    elif st.session_state.current_section == 'D':
-        display_section_d()
-    elif st.session_state.current_section == 'Draft_Dashboard':
-        display_draft_dashboard()
-    elif st.session_state.current_section == 'Admin_Dashboard':
+    if selected_menu == 'Dashboard':
         admin_dashboard()
-    elif st.session_state.current_section == 'Admin_Interviewers':
-        user_management_section()
-    elif st.session_state.current_section == 'Admin_Analytics':
+    elif selected_menu == 'Data Management':
+        display_all_interviews()
+    elif selected_menu == 'Edit_Interviews':
+        interview_editor_main()
+    elif selected_menu == 'Analytics':
         analytics_main()
-    elif st.session_state.current_section == 'Admin_Settings':
+    elif selected_menu == 'User Management':
+        user_management_section()
+    elif selected_menu == 'System Tools':
         database_tools_section()
-    else:
-        display_dashboard()
 
-def display_dashboard():
-    """Display main dashboard"""
-    st.title("🏠 Compliance Survey Dashboard")
-    
-    if st.session_state.interviewer_logged_in:
-        st.subheader("Welcome, Interviewer!")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric("Your Drafts", "5", "2 new")
-        
-        with col2:
-            st.metric("Completed Surveys", "12", "3 this week")
-        
-        with col3:
-            st.metric("Avg. Completion Time", "45 min", "-5 min")
-        
-        # Quick actions
-        st.markdown("---")
-        st.subheader("🚀 Quick Actions")
-        
-        action_col1, action_col2, action_col3 = st.columns(3)
-        
-        with action_col1:
-            if st.button("🆕 Start New Interview", use_container_width=True):
-                reset_interview()
-                st.session_state.current_section = 'A'
-                st.rerun()
-        
-        with action_col2:
-            if st.button("📋 Manage Drafts", use_container_width=True):
-                st.session_state.current_section = 'Draft_Dashboard'
-                st.rerun()
-        
-        with action_col3:
-            if st.button("📊 View Progress", use_container_width=True):
-                st.session_state.current_section = 'Admin_Analytics'
-                st.rerun()
-    
-    elif st.session_state.admin_logged_in:
-        st.subheader("Admin Overview")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            st.metric("Total Surveys", "156", "12 new")
-        
-        with col2:
-            st.metric("Active Interviewers", "6", "1 new")
-        
-        with col3:
-            st.metric("Completion Rate", "78%", "5%")
-        
-        with col4:
-            st.metric("Avg. Compliance Cost", "12.5%", "-2.3%")
-        
-        # Recent activity
-        st.markdown("---")
-        st.subheader("📈 Recent Activity")
-        
-        # Placeholder for recent activity chart
-        st.info("📊 Analytics dashboard will show recent survey activity and trends")
-
-# Admin Navigation Functions
 def admin_dashboard():
     """Admin dashboard"""
     st.title("🔧 Admin Dashboard")
@@ -3176,6 +1838,31 @@ def admin_dashboard():
     
     with tab3:
         data_export_section()
+
+def display_all_interviews():
+    """Display all interviews"""
+    interviews_df = get_all_interviews()
+    
+    if not interviews_df.empty:
+        st.write(f"**Total Records:** {len(interviews_df)}")
+        
+        display_df = interviews_df.copy()
+        if 'submission_date' in display_df.columns:
+            display_df['submission_date'] = display_df['submission_date'].apply(lambda x: x.split('.')[0] if x else '')
+        if 'last_modified' in display_df.columns:
+            display_df['last_modified'] = display_df['last_modified'].apply(lambda x: x.split('.')[0] if x else '')
+        
+        st.dataframe(display_df, use_container_width=True)
+        
+        st.subheader("📋 Interview Details")
+        selected_interview = st.selectbox("Select interview to view details:", 
+                                        interviews_df['interview_id'].tolist(),
+                                        key="interview_select")
+        
+        if selected_interview:
+            display_interview_details(selected_interview)
+    else:
+        st.info("No interviews found in the database.")
 
 def search_and_filter_interviews():
     """Search and filter interviews"""
@@ -3419,6 +2106,166 @@ def display_interview_details(interview_id):
             for i, reform in enumerate(reforms, 1):
                 st.write(f"{i}. {reform}")
 
-# Run the application
+# Data Collection Navigation
+def data_collection_navigation():
+    """Data collection navigation for interviewers"""
+    st.sidebar.title("📋 Interview Panel")
+    st.sidebar.write(f"Interviewer: **{st.session_state.current_user}**")
+    
+    if st.sidebar.button("🚪 Logout", use_container_width=True, key="interviewer_logout_btn"):
+        logout()
+    
+    user_interviews = get_user_interviews(st.session_state.current_user)
+    if not user_interviews.empty:
+        st.sidebar.markdown("---")
+        st.sidebar.header("📈 My Statistics")
+        total = len(user_interviews)
+        submitted = len(user_interviews[user_interviews['status'] == 'submitted'])
+        drafts = len(user_interviews[user_interviews['status'] == 'draft'])
+        
+        st.sidebar.write(f"**Total:** {total}")
+        st.sidebar.write(f"**Submitted:** {submitted}")
+        st.sidebar.write(f"**Drafts:** {drafts}")
+    
+    display_draft_quick_access()
+    
+    st.sidebar.markdown("---")
+    
+    sections = {
+        'A': 'Interview & Business Profile',
+        'B': 'Registration & Licensing', 
+        'C': 'Ongoing Compliance',
+        'D': 'Reform Priorities',
+        'Dashboard': 'My Interviews',
+        'My_Data': 'My Data Management',
+        'Draft_Dashboard': '📝 Draft Manager'
+    }
+    
+    selected_section = st.sidebar.radio("Go to Section:", list(sections.keys()), 
+                                      format_func=lambda x: f"Section {x}: {sections[x]}" if x in ['A','B','C','D'] else sections[x],
+                                      key="main_navigation")
+    
+    if selected_section != st.session_state.current_section:
+        st.session_state.current_section = selected_section
+        st.rerun()
+    
+    if st.session_state.current_section == 'A':
+        display_section_a()
+    elif st.session_state.current_section == 'B':
+        enhanced_section_b()
+    elif st.session_state.current_section == 'C':
+        display_section_c()
+    elif st.session_state.current_section == 'D':
+        display_section_d()
+    elif st.session_state.current_section == 'Dashboard':
+        display_interviewer_dashboard()
+    elif st.session_state.current_section == 'My_Data':
+        display_interviewer_data_management()
+    elif st.session_state.current_section == 'Draft_Dashboard':
+        display_draft_dashboard()
+
+def display_interviewer_dashboard():
+    """Dashboard for individual interviewer"""
+    st.header("📊 My Interview Dashboard")
+    
+    user_interviews = get_user_interviews(st.session_state.current_user)
+    
+    if not user_interviews.empty:
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Interviews", len(user_interviews))
+        with col2:
+            submitted = len(user_interviews[user_interviews['status'] == 'submitted'])
+            st.metric("Submitted", submitted)
+        with col3:
+            drafts = len(user_interviews[user_interviews['status'] == 'draft'])
+            st.metric("Drafts", drafts)
+        with col4:
+            completion_rate = (submitted / len(user_interviews)) * 100 if len(user_interviews) > 0 else 0
+            st.metric("Completion Rate", f"{completion_rate:.1f}%")
+        
+        st.subheader("📋 My Recent Interviews")
+        st.dataframe(user_interviews, use_container_width=True)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            status_counts = user_interviews['status'].value_counts()
+            fig_status = px.pie(values=status_counts.values, names=status_counts.index, 
+                              title="Interview Status Distribution")
+            st.plotly_chart(fig_status, use_container_width=True)
+        
+        with col2:
+            if 'primary_sector' in user_interviews.columns:
+                sector_counts = user_interviews['primary_sector'].value_counts()
+                fig_sector = px.bar(x=sector_counts.index, y=sector_counts.values,
+                                  title="Interviews by Sector", color=sector_counts.index)
+                st.plotly_chart(fig_sector, use_container_width=True)
+    else:
+        st.info("You haven't conducted any interviews yet. Start with Section A!")
+
+def display_interviewer_data_management():
+    """Data management for individual interviewer"""
+    st.header("💾 My Data Management")
+    
+    user_interviews = get_user_interviews(st.session_state.current_user)
+    
+    if not user_interviews.empty:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.subheader("Export My Data")
+            csv_data = user_interviews.to_csv(index=False)
+            st.download_button(
+                label="📥 Download My Interviews (CSV)",
+                data=csv_data,
+                file_name=f"my_interviews_{st.session_state.current_user}_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+        
+        with col2:
+            st.subheader("Quick Actions")
+            if st.button("🔄 Start New Interview", use_container_width=True):
+                reset_interview()
+                st.session_state.current_section = 'A'
+                st.rerun()
+            
+            if st.button("📊 View All My Data", use_container_width=True):
+                st.dataframe(user_interviews, use_container_width=True)
+    else:
+        st.info("No data available for export.")
+
+# Main Application
+def main():
+    # Initialize session state first
+    initialize_session_state()
+    
+    # Test database connection first
+    if not test_connection():
+        st.error("Cannot proceed without database connection")
+        st.info("Please check your SQLite Cloud connection string and try again.")
+        return
+    
+    # Initialize database
+    if not st.session_state.get('database_initialized', False):
+        with st.spinner("🔄 Setting up database..."):
+            if check_and_fix_database():
+                st.session_state.database_initialized = True
+            else:
+                st.error("Failed to initialize database. Please check your connection.")
+                return
+    
+    # Run database migrations
+    add_missing_columns()
+    
+    # Route based on login status
+    if not st.session_state.interviewer_logged_in and not st.session_state.admin_logged_in:
+        login_system()
+    elif st.session_state.admin_logged_in:
+        admin_navigation()
+    else:
+        data_collection_navigation()
+
 if __name__ == "__main__":
     main()
