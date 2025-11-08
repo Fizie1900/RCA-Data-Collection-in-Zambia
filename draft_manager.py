@@ -9,9 +9,25 @@ class DraftManager:
     def __init__(self):
         self.conn = sqlite3.connect('compliance_survey.db', check_same_thread=False)
     
+    def ensure_table_exists(self):
+        """Ensure the responses table exists"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='responses'")
+            if not cursor.fetchone():
+                st.error("❌ Database table 'responses' does not exist. Please initialize the database first.")
+                return False
+            return True
+        except Exception as e:
+            st.error(f"Error checking table existence: {str(e)}")
+            return False
+    
     def get_user_drafts(self, username):
         """Get all drafts for a specific user"""
         try:
+            if not self.ensure_table_exists():
+                return pd.DataFrame()
+                
             query = """
             SELECT 
                 interview_id, business_name, district, primary_sector, 
@@ -30,6 +46,9 @@ class DraftManager:
     def get_all_drafts(self):
         """Get all drafts (for admins)"""
         try:
+            if not self.ensure_table_exists():
+                return pd.DataFrame()
+                
             query = """
             SELECT 
                 interview_id, business_name, district, primary_sector, 
@@ -48,6 +67,9 @@ class DraftManager:
     def load_draft(self, interview_id):
         """Load a specific draft by interview ID"""
         try:
+            if not self.ensure_table_exists():
+                return None
+                
             query = "SELECT * FROM responses WHERE interview_id = ?"
             df = pd.read_sql(query, self.conn, params=(interview_id,))
             if not df.empty:
@@ -60,6 +82,9 @@ class DraftManager:
     def update_draft_progress(self, interview_id, current_section, progress_percentage):
         """Update draft progress and current section"""
         try:
+            if not self.ensure_table_exists():
+                return False
+                
             cursor = self.conn.cursor()
             cursor.execute('''
                 UPDATE responses 
@@ -75,6 +100,9 @@ class DraftManager:
     def delete_draft(self, interview_id):
         """Delete a draft interview"""
         try:
+            if not self.ensure_table_exists():
+                return False
+                
             cursor = self.conn.cursor()
             cursor.execute("DELETE FROM responses WHERE interview_id = ? AND status = 'draft'", (interview_id,))
             self.conn.commit()
