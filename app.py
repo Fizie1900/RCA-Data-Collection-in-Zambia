@@ -39,34 +39,6 @@ except ImportError:
         def __init__(self):
             pass
 
-try:
-    from draft_manager import DraftManager, display_draft_dashboard, display_draft_quick_access, load_draft_into_session
-except ImportError:
-    class DraftManager:
-        def __init__(self):
-            pass
-        def get_user_drafts(self, username):
-            return pd.DataFrame()
-        def get_all_drafts(self):
-            return pd.DataFrame()
-        def load_draft(self, interview_id):
-            return None
-        def update_draft_progress(self, interview_id, current_section, progress_percentage):
-            return False
-        def delete_draft(self, interview_id):
-            return False
-        def calculate_progress(self, form_data, current_section):
-            return 0
-    
-    def display_draft_dashboard():
-        st.info("📝 Draft Manager not available")
-    
-    def display_draft_quick_access():
-        pass
-    
-    def load_draft_into_session(draft_manager, interview_id):
-        st.error("Draft manager not available")
-
 # SQLite Cloud configuration
 SQLITECLOUD_CONFIG = {
     "connection_string": "sqlitecloud://ctoxm6jkvz.g4.sqlite.cloud:8860/compliance_survey.db?apikey=UoEbilyXxrbfqDUjsrbiLxUZQkRMtyK9fbhIzKVFuAw"
@@ -156,6 +128,381 @@ ADMIN_CREDENTIALS = {
 APPLICATION_MODES = ["Entirely In-Person", "Mixed", "Entirely Online"]
 DISTRICTS = ["Lusaka", "Kitwe", "Kasama", "Ndola", "Livingstone", "Other (Please specify)"]
 INTERVIEWERS = list(INTERVIEWER_CREDENTIALS.keys())
+
+# Initialize session state variables
+def initialize_session_state():
+    """Initialize all session state variables"""
+    defaults = {
+        'logged_in': False,
+        'current_user': None,
+        'user_role': None,
+        'interviewer_logged_in': False,
+        'admin_logged_in': False,
+        'current_section': 'A',
+        'current_interview_id': None,
+        'form_data': {},
+        'procedures_list': [],
+        'selected_isic_codes': [],
+        'business_activities_text': "",
+        'show_draft_dashboard': False,
+        'custom_procedures': [],
+        'custom_authorities': [],
+        'manual_isic_input': "",
+        'selected_isic_for_business': "",
+        'isic_search_term': "",
+        'show_detailed_form': False,
+        'use_template': False,
+        'interview_start_time': None,
+        'active_procedure_index': None,
+        'district_specific_notes': {},
+        'isic_df': None,
+        'bulk_procedure_mode': False,
+        'quick_manual_mode': False,
+        'app_mode': 'login',
+        'database_initialized': False
+    }
+    
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+# Initialize the session state
+initialize_session_state()
+
+# Draft Manager Class
+class DraftManager:
+    def __init__(self):
+        pass
+    
+    def get_user_drafts(self, username):
+        """Get all drafts for a specific user"""
+        try:
+            query = """
+            SELECT 
+                interview_id, business_name, district, primary_sector, 
+                business_size, status, last_modified, current_section,
+                draft_progress, created_by
+            FROM responses 
+            WHERE status = 'draft' AND created_by = ?
+            ORDER BY last_modified DESC
+            """
+            result = execute_query(query, (username,), return_result=True)
+            if result and isinstance(result, tuple) and result[0]:
+                result_data, columns = result
+                return pd.DataFrame(result_data, columns=columns)
+            return pd.DataFrame()
+        except Exception as e:
+            st.error(f"Error loading drafts: {str(e)}")
+            return pd.DataFrame()
+    
+    def get_all_drafts(self):
+        """Get all drafts (for admins)"""
+        try:
+            query = """
+            SELECT 
+                interview_id, business_name, district, primary_sector, 
+                business_size, status, last_modified, current_section,
+                draft_progress, created_by
+            FROM responses 
+            WHERE status = 'draft'
+            ORDER BY last_modified DESC
+            """
+            result = execute_query(query, return_result=True)
+            if result and isinstance(result, tuple) and result[0]:
+                result_data, columns = result
+                return pd.DataFrame(result_data, columns=columns)
+            return pd.DataFrame()
+        except Exception as e:
+            st.error(f"Error loading drafts: {str(e)}")
+            return pd.DataFrame()
+    
+    def load_draft(self, interview_id):
+        """Load a specific draft by interview ID"""
+        try:
+            query = "SELECT * FROM responses WHERE interview_id = ?"
+            result = execute_query(query, (interview_id,), return_result=True)
+            if result and isinstance(result, tuple) and result[0]:
+                result_data, columns = result
+                df = pd.DataFrame(result_data, columns=columns)
+                if not df.empty:
+                    return df.iloc[0].to_dict()
+            return None
+        except Exception as e:
+            st.error(f"Error loading draft: {str(e)}")
+            return None
+    
+    def update_draft_progress(self, interview_id, current_section, progress_percentage):
+        """Update draft progress and current section"""
+        try:
+            current_time = datetime.now().isoformat()
+            result = execute_query('''
+                UPDATE responses 
+                SET current_section = ?, draft_progress = ?, last_modified = ?
+                WHERE interview_id = ?
+            ''', (current_section, progress_percentage, current_time, interview_id))
+            return result is not None
+        except Exception as e:
+            st.error(f"Error updating draft progress: {str(e)}")
+            return False
+    
+    def delete_draft(self, interview_id):
+        """Delete a draft interview"""
+        try:
+            result = execute_query("DELETE FROM responses WHERE interview_id = ? AND status = 'draft'", (interview_id,))
+            return result is not None
+        except Exception as e:
+            st.error(f"Error deleting draft: {str(e)}")
+            return False
+    
+    def calculate_progress(self, form_data, current_section):
+        """Calculate progress percentage based on completed sections"""
+        progress = 0
+        sections_completed = 0
+        total_sections = 4  # A, B, C, D
+        
+        # Check Section A completion
+        if form_data.get('business_name') and form_data.get('contact_person'):
+            sections_completed += 1
+        
+        # Check Section B completion (procedures)
+        if form_data.get('procedure_data'):
+            try:
+                procedures = json.loads(form_data['procedure_data'])
+                if procedures and len(procedures) > 0:
+                    sections_completed += 1
+            except:
+                pass
+        
+        # Check Section C completion
+        if (form_data.get('completion_time_local') is not None and 
+            form_data.get('completion_time_national') is not None):
+            sections_completed += 1
+        
+        # Check Section D completion
+        if form_data.get('reform_priorities'):
+            try:
+                reforms = json.loads(form_data['reform_priorities'])
+                if reforms and len(reforms) > 0:
+                    sections_completed += 1
+            except:
+                pass
+        
+        # Base progress + current section progress
+        base_progress = (sections_completed / total_sections) * 80
+        current_section_progress = 20  # 20% for current active section
+        
+        return min(base_progress + current_section_progress, 100)
+
+def display_draft_dashboard():
+    """Main draft management dashboard"""
+    st.title("📋 Draft Management")
+    
+    # Initialize draft manager
+    draft_manager = DraftManager()
+    
+    # Get user's drafts
+    if st.session_state.get('admin_logged_in', False):
+        drafts_df = draft_manager.get_all_drafts()
+        user_type = "All Users"
+    else:
+        drafts_df = draft_manager.get_user_drafts(st.session_state.current_user)
+        user_type = "Your"
+    
+    if not drafts_df.empty:
+        st.subheader(f"{user_type} Draft Interviews ({len(drafts_df)})")
+        
+        # Display drafts in a nice format
+        for index, draft in drafts_df.iterrows():
+            display_draft_card(draft_manager, draft, index)
+    else:
+        st.info("💡 No draft interviews found. Start a new interview to create drafts!")
+    
+    # Quick actions
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🚀 Quick Actions")
+    
+    col1, col2 = st.sidebar.columns(2)
+    with col1:
+        if st.button("🆕 New Interview", use_container_width=True, key="new_interview_btn"):
+            reset_interview()
+            st.session_state.current_section = 'A'
+            st.rerun()
+    
+    with col2:
+        if st.button("🔄 Refresh", use_container_width=True, key="refresh_drafts"):
+            st.rerun()
+
+def display_draft_card(draft_manager, draft, index):
+    """Display a draft as a card with actions"""
+    with st.container():
+        st.markdown("---")
+        
+        col1, col2, col3 = st.columns([3, 1, 1])
+        
+        with col1:
+            st.write(f"### {draft['business_name'] or 'Unnamed Business'}")
+            
+            # Draft info
+            info_col1, info_col2, info_col3 = st.columns(3)
+            with info_col1:
+                st.write(f"**District:** {draft['district'] or 'Not set'}")
+                st.write(f"**Sector:** {draft['primary_sector'] or 'Not set'}")
+            with info_col2:
+                st.write(f"**Last Saved:** {draft['last_modified'][:16] if draft['last_modified'] else 'Never'}")
+                st.write(f"**Current Section:** {draft['current_section'] or 'A'}")
+            with info_col3:
+                st.write(f"**Progress:** {draft['draft_progress'] or 0}%")
+                if draft['created_by'] and st.session_state.get('admin_logged_in', False):
+                    st.write(f"**Created by:** {draft['created_by']}")
+            
+            # Progress bar
+            progress = draft['draft_progress'] or 0
+            st.progress(progress / 100)
+        
+        with col2:
+            if st.button("➡️ Continue", key=f"continue_{index}", use_container_width=True):
+                load_draft_into_session(draft_manager, draft['interview_id'])
+                st.rerun()
+        
+        with col3:
+            if st.button("🗑️ Delete", key=f"delete_{index}", use_container_width=True):
+                if draft_manager.delete_draft(draft['interview_id']):
+                    st.success("✅ Draft deleted successfully!")
+                    st.rerun()
+
+def load_draft_into_session(draft_manager, interview_id):
+    """Load a draft into the current session"""
+    draft_data = draft_manager.load_draft(interview_id)
+    
+    if draft_data:
+        # Load all session state variables
+        st.session_state.current_interview_id = interview_id
+        st.session_state.form_data = {
+            'interviewer_name': draft_data.get('interviewer_name', ''),
+            'interview_date': draft_data.get('interview_date', ''),
+            'start_time': draft_data.get('start_time', ''),
+            'end_time': draft_data.get('end_time', ''),
+            'business_name': draft_data.get('business_name', ''),
+            'district': draft_data.get('district', ''),
+            'physical_address': draft_data.get('physical_address', ''),
+            'contact_person': draft_data.get('contact_person', ''),
+            'email': draft_data.get('email', ''),
+            'phone': draft_data.get('phone', ''),
+            'primary_sector': draft_data.get('primary_sector', ''),
+            'legal_status': draft_data.get('legal_status', ''),
+            'business_size': draft_data.get('business_size', ''),
+            'ownership_structure': draft_data.get('ownership_structure', ''),
+            'gender_owner': draft_data.get('gender_owner', ''),
+            'business_activities': draft_data.get('business_activities', ''),
+            'year_established': draft_data.get('year_established', 0),
+            'turnover_range': draft_data.get('turnover_range', ''),
+            'employees_fulltime': draft_data.get('employees_fulltime', 0),
+            'employees_parttime': draft_data.get('employees_parttime', 0),
+            'completion_time_local': draft_data.get('completion_time_local', 0),
+            'completion_time_national': draft_data.get('completion_time_national', 0),
+            'completion_time_dk': draft_data.get('completion_time_dk', 0),
+            'compliance_cost_percentage': draft_data.get('compliance_cost_percentage', 0),
+            'permit_comparison_national': draft_data.get('permit_comparison_national', ''),
+            'permit_comparison_local': draft_data.get('permit_comparison_local', ''),
+            'cost_comparison_national': draft_data.get('cost_comparison_national', ''),
+            'cost_comparison_local': draft_data.get('cost_comparison_local', ''),
+            'business_climate_rating': draft_data.get('business_climate_rating', ''),
+            'reform_priorities': draft_data.get('reform_priorities', '[]')
+        }
+        
+        # Load procedures
+        procedures_json = draft_data.get('procedure_data')
+        if procedures_json and procedures_json != 'null' and procedures_json != '[]':
+            try:
+                st.session_state.procedures_list = json.loads(procedures_json)
+            except:
+                st.session_state.procedures_list = []
+        else:
+            st.session_state.procedures_list = []
+        
+        # Load ISIC codes
+        isic_json = draft_data.get('isic_codes')
+        if isic_json and isic_json != 'null' and isic_json != '[]':
+            try:
+                st.session_state.selected_isic_codes = json.loads(isic_json)
+            except:
+                st.session_state.selected_isic_codes = []
+        else:
+            st.session_state.selected_isic_codes = []
+        
+        # Load business activities text
+        st.session_state.business_activities_text = draft_data.get('business_activities', '')
+        
+        # Set current section
+        st.session_state.current_section = draft_data.get('current_section', 'A')
+        
+        st.success(f"✅ Loaded draft: {draft_data.get('business_name', 'Unnamed Business')}")
+    else:
+        st.error("❌ Failed to load draft")
+
+def display_draft_quick_access():
+    """Display quick draft access in sidebar"""
+    if st.session_state.get('interviewer_logged_in', False) or st.session_state.get('admin_logged_in', False):
+        draft_manager = DraftManager()
+        
+        if st.session_state.get('admin_logged_in', False):
+            drafts_df = draft_manager.get_all_drafts()
+        else:
+            drafts_df = draft_manager.get_user_drafts(st.session_state.current_user)
+        
+        if not drafts_df.empty:
+            st.sidebar.markdown("---")
+            st.sidebar.subheader("📝 Your Drafts")
+            
+            for index, draft in drafts_df.head(3).iterrows():  # Show only 3 most recent
+                business_name = draft['business_name'] or 'Unnamed Business'
+                progress = draft['draft_progress'] or 0
+                
+                if st.sidebar.button(
+                    f"➡️ {business_name[:20]}... ({progress}%)", 
+                    key=f"sidebar_draft_{index}",
+                    use_container_width=True
+                ):
+                    load_draft_into_session(draft_manager, draft['interview_id'])
+                    st.rerun()
+            
+            # Show "View All" if there are more drafts
+            if len(drafts_df) > 3:
+                if st.sidebar.button("📋 View All Drafts", use_container_width=True):
+                    st.session_state.current_section = 'Draft_Dashboard'
+                    st.rerun()
+
+def auto_save_draft():
+    """Auto-save current form state as draft"""
+    if (st.session_state.get('form_data') and 
+        st.session_state.get('current_interview_id') and
+        st.session_state.get('interviewer_logged_in', False)):
+        
+        # Calculate progress
+        draft_manager = DraftManager()
+        progress = draft_manager.calculate_progress(
+            st.session_state.form_data, 
+            st.session_state.current_section
+        )
+        
+        # Update progress
+        draft_manager.update_draft_progress(
+            st.session_state.current_interview_id,
+            st.session_state.current_section,
+            progress
+        )
+        
+        return True
+    return False
+
+def reset_interview():
+    """Reset the interview session state"""
+    st.session_state.current_interview_id = None
+    st.session_state.form_data = {}
+    st.session_state.procedures_list = []
+    st.session_state.selected_isic_codes = []
+    st.session_state.business_activities_text = ""
+    st.session_state.current_section = 'A'
 
 # pyisic Integration for ISIC Classification
 class PyISICClient:
@@ -534,7 +881,8 @@ class PyISICClient:
             '3822': 'Treatment and disposal of hazardous waste',
             '3830': 'Materials recovery',
             '3900': 'Remediation activities and other waste management services',
-            '4100': 'Construction of buildings',
+            '4110': 'Development of building projects',
+            '4120': 'Construction of buildings',
             '4210': 'Construction of roads and railways',
             '4220': 'Construction of utility projects',
             '4290': 'Construction of other civil engineering projects',
@@ -574,15 +922,15 @@ class PyISICClient:
             '4751': 'Retail sale of textiles in specialized stores',
             '4752': 'Retail sale of hardware, paints and glass in specialized stores',
             '4753': 'Retail sale of carpets, rugs, wall and floor coverings in specialized stores',
-            '4759': 'Retail sale of other household appliances in specialized stores',
-            '4761': 'Retail sale of books, newspapers and stationery in specialized stores',
+            '4759': 'Retail sale of electrical household appliances, furniture, lighting equipment and other household articles in specialized stores',
+            '4761': 'Retail sale of books, newspapers and stationary in specialized stores',
             '4762': 'Retail sale of music and video recordings in specialized stores',
             '4763': 'Retail sale of sporting equipment in specialized stores',
             '4764': 'Retail sale of games and toys in specialized stores',
             '4771': 'Retail sale of clothing, footwear and leather articles in specialized stores',
             '4772': 'Retail sale of pharmaceutical and medical goods, cosmetic and toilet articles in specialized stores',
             '4773': 'Other retail sale of new goods in specialized stores',
-            '4774': 'Retail sale of second-hand goods in specialized stores',
+            '4774': 'Retail sale of second-hand goods',
             '4781': 'Retail sale via stalls and markets of food, beverages and tobacco products',
             '4782': 'Retail sale via stalls and markets of textiles, clothing and footwear',
             '4789': 'Retail sale via stalls and markets of other goods',
@@ -612,7 +960,7 @@ class PyISICClient:
             '5520': 'Camping grounds, recreational vehicle parks and trailer parks',
             '5590': 'Other accommodation',
             '5610': 'Restaurants and mobile food service activities',
-            '5621': 'Event catering activities',
+            '5621': 'Event catering',
             '5629': 'Other food service activities',
             '5630': 'Beverage serving activities',
             '5811': 'Book publishing',
@@ -644,7 +992,7 @@ class PyISICClient:
             '6430': 'Trusts, funds and similar financial entities',
             '6491': 'Financial leasing',
             '6492': 'Other credit granting',
-            '6499': 'Other financial service activities, except insurance and pension funding',
+            '6499': 'Other financial service activities, except insurance and pension funding n.e.c.',
             '6511': 'Life insurance',
             '6512': 'Non-life insurance',
             '6520': 'Reinsurance',
@@ -715,7 +1063,7 @@ class PyISICClient:
             '8610': 'Hospital activities',
             '8620': 'Medical and dental practice activities',
             '8690': 'Other human health activities',
-            '8710': 'Residential nursing care activities',
+            '8710': 'Residential nursing care facilities',
             '8720': 'Residential care activities for mental retardation, mental health and substance abuse',
             '8730': 'Residential care activities for the elderly and disabled',
             '8790': 'Other residential care activities',
@@ -754,74 +1102,168 @@ class PyISICClient:
             '9900': 'Activities of extraterritorial organizations and bodies'
         }
 
-# Enhanced ISIC data management with pyisic integration
-@st.cache_data(ttl=3600)  # Cache for 1 hour
-def search_isic_codes_enhanced(search_term: str, isic_client) -> List[Dict[str, Any]]:
-    """
-    Enhanced ISIC search using pyisic library
+# Enhanced ISIC data management for SQLite Cloud
+@st.cache_data
+def load_isic_dataframe():
+    """Load ISIC data from Excel file and return as DataFrame"""
+    excel_files = [
+        "Complete_ISIC5_Structure_16Dec2022final.xlsx",
+        "ISIC_Codes.xlsx", 
+        "isic_codes.xlsx",
+        "Complete_ISIC5.xlsx",
+        "ISIC_4.xlsx",
+        "isic_data.xlsx"
+    ]
     
-    Args:
-        search_term: Term to search for
-        isic_client: pyisic client instance
+    for filename in excel_files:
+        if os.path.exists(filename):
+            try:
+                df = pd.read_excel(filename)
+                st.success(f"✅ ISIC database loaded from: {filename}")
+                
+                # Cache the data in SQLite Cloud
+                cache_isic_data(df)
+                return df
+            except Exception as e:
+                st.warning(f"Could not load {filename}: {str(e)}")
+                continue
+    
+    # If no file found, try to load from cache
+    return load_isic_from_cache()
+
+def cache_isic_data(df):
+    """Cache ISIC data in SQLite Cloud for faster access"""
+    try:
+        # Clear existing cache
+        execute_query("DELETE FROM isic_cache")
         
-    Returns:
-        List of formatted ISIC code results
-    """
-    if not search_term:
+        # Insert new data
+        insert_data = []
+        for _, row in df.iterrows():
+            code_col = next((col for col in ['Code', 'CODE', 'code'] if col in df.columns), None)
+            title_col = next((col for col in ['Title', 'TITLE', 'title'] if col in df.columns), None)
+            
+            if code_col and title_col:
+                code = str(row[code_col]) if pd.notna(row[code_col]) else None
+                title = str(row[title_col]) if pd.notna(row[title_col]) else ""
+                description = title
+                
+                if code:
+                    current_time = datetime.now().isoformat()
+                    insert_data.append((code, title, description, 'General', current_time))
+        
+        # Batch insert
+        if insert_data:
+            execute_many(
+                "INSERT INTO isic_cache (code, title, description, category, last_updated) VALUES (?, ?, ?, ?, ?)",
+                insert_data
+            )
+            st.success(f"✅ Cached {len(insert_data)} ISIC codes in database")
+        
+    except Exception as e:
+        st.warning(f"Could not cache ISIC data: {str(e)}")
+
+def load_isic_from_cache():
+    """Load ISIC data from SQLite Cloud cache"""
+    try:
+        result = execute_query("SELECT code, title, description FROM isic_cache", return_result=True)
+        if result and isinstance(result, tuple) and result[0]:
+            result_data, columns = result
+            df = pd.DataFrame(result_data, columns=columns)
+            
+            if not df.empty:
+                st.info("📁 Loaded ISIC data from cache")
+                return df
+            else:
+                st.warning("No ISIC data available in cache. Using basic codes.")
+                return create_basic_isic_data()
+        else:
+            st.warning("No ISIC data available. Using basic codes.")
+            return create_basic_isic_data()
+    except Exception as e:
+        st.warning(f"Error loading ISIC cache: {str(e)}")
+        return create_basic_isic_data()
+
+def create_basic_isic_data():
+    """Create basic ISIC data structure"""
+    basic_data = {
+        'Code': ['0111', '0112', '0113', '0114', '0115', '0116', '0121', '0122', 
+                '4100', '4101', '4102', '4310', '4311', '4312', '4320', '4321',
+                '4610', '4620', '4630', '4651', '4652', '4661', '4662'],
+        'Title': [
+            'Growing of cereals (except rice), leguminous crops and oil seeds',
+            'Growing of rice',
+            'Growing of vegetables and melons, roots and tubers',
+            'Growing of sugar cane',
+            'Growing of tobacco',
+            'Growing of fibre crops',
+            'Growing of grapes',
+            'Growing of tropical and subtropical fruits',
+            'Construction of buildings',
+            'Construction of residential buildings',
+            'Construction of non-residential buildings',
+            'Demolition and site preparation',
+            'Demolition',
+            'Site preparation',
+            'Electrical, plumbing and other construction installation activities',
+            'Electrical installation',
+            'Wholesale on a fee or contract basis',
+            'Wholesale of agricultural raw materials and live animals',
+            'Wholesale of food, beverages and tobacco',
+            'Wholesale of computers, computer peripheral equipment and software',
+            'Wholesale of electronic and telecommunications equipment and parts',
+            'Wholesale of agricultural machinery, equipment and supplies',
+            'Wholesale of construction machinery, equipment and supplies'
+        ]
+    }
+    return pd.DataFrame(basic_data)
+
+def search_isic_codes_enhanced(search_term, isic_df):
+    """Enhanced ISIC search with multiple matching strategies"""
+    if isic_df is None or not search_term:
         return []
     
-    search_term = str(search_term).strip()
+    search_term = str(search_term).strip().lower()
     
-    # Use pyisic for search
-    with st.spinner("🔍 Searching ISIC classification..."):
-        results = isic_client.search_isic_codes(search_term)
-    
-    if results:
-        return results
-    
-    return []
+    try:
+        # Try different column combinations
+        code_col = next((col for col in ['Code', 'CODE', 'code'] if col in isic_df.columns), None)
+        title_col = next((col for col in ['Title', 'TITLE', 'title', 'Description', 'DESCRIPTION'] if col in isic_df.columns), None)
+        
+        if not code_col or not title_col:
+            return []
+        
+        # Multiple search strategies
+        exact_code_matches = isic_df[isic_df[code_col].astype(str).str.lower() == search_term]
+        code_contains = isic_df[isic_df[code_col].astype(str).str.lower().str.contains(search_term, na=False)]
+        title_contains = isic_df[isic_df[title_col].astype(str).str.lower().str.contains(search_term, na=False)]
+        
+        # Combine results
+        results = pd.concat([exact_code_matches, code_contains, title_contains]).drop_duplicates()
+        
+        formatted_results = []
+        for _, row in results.iterrows():
+            code = str(row[code_col]).strip()
+            title = str(row[title_col]).strip()
+            if code and title:
+                formatted_results.append({
+                    'code': code,
+                    'title': title,
+                    'display': f"{code} - {title}",
+                    'full_info': f"ISIC {code}: {title}"
+                })
+        
+        return formatted_results[:20]  # Limit results
+        
+    except Exception as e:
+        st.error(f"Search error: {str(e)}")
+        return []
 
-def auto_populate_business_activities(isic_result: Dict[str, Any]):
-    """
-    Auto-populate business activities when an ISIC code is selected
-    
-    Args:
-        isic_result: Selected ISIC code information
-    """
-    current_activities = st.session_state.business_activities_text.strip()
-    new_activity = f"{isic_result['title']} (ISIC: {isic_result['code']})"
-    
-    if not current_activities:
-        # If no activities yet, set as the main activity
-        st.session_state.business_activities_text = new_activity
-    elif new_activity not in current_activities:
-        # If activities exist but this one isn't included, append it
-        separator = "; " if not current_activities.endswith(';') else " "
-        st.session_state.business_activities_text = current_activities + separator + new_activity
-
-def display_selected_isic_code(code, index, prefix):
-    """Display a selected ISIC code with remove option"""
-    col1, col2 = st.columns([4, 1])
-    
-    with col1:
-        st.write(f"• {code}")
-    
-    with col2:
-        if st.button("🗑️", key=f"remove_{prefix}_{index}"):
-            st.session_state.selected_isic_codes.pop(index)
-            st.rerun()
-
-# Enhanced Business Activities with pyisic Integration
+# Enhanced Business Activities with ISIC Integration for SQLite Cloud
 def business_activities_section():
-    """Enhanced business activities section with pyisic integration"""
+    """Enhanced business activities section with ISIC integration"""
     
     st.subheader("🏢 Business Activities & ISIC Classification")
-    
-    # Initialize pyisic client
-    if st.session_state.isic_client is None:
-        st.session_state.isic_client = PyISICClient()
-    
-    isic_client = st.session_state.isic_client
     
     # Two-column layout for better organization
     col1, col2 = st.columns([2, 1])
@@ -843,113 +1285,61 @@ def business_activities_section():
         st.write("• Include all major revenue streams")
         st.write("• Mention any specialized activities")
     
-    # ISIC Code Selection Section with pyisic
+    # ISIC Code Selection Section
     st.subheader("📊 ISIC Code Classification")
     
-    # Real-time search with auto-suggest
-    search_col1, search_col2 = st.columns([3, 1])
+    # Enhanced ISIC search and selection
+    search_term = st.text_input(
+        "🔍 Search ISIC codes by code or description:",
+        placeholder="e.g., agriculture, construction, 0111, manufacturing",
+        key="isic_search_main",
+        value=st.session_state.isic_search_term
+    )
     
-    with search_col1:
-        search_term = st.text_input(
-            "🔍 Search ISIC codes (type to search automatically):",
-            placeholder="e.g., agriculture, construction, 0111, manufacturing",
-            key="isic_search_main",
-            value=st.session_state.isic_search_term
-        )
-    
-    with search_col2:
-        st.write("")  # Spacer
-        st.write("")  # Spacer
-        if st.button("🔄 Clear Search", use_container_width=True, key="clear_search"):
-            st.session_state.isic_search_term = ""
-            st.rerun()
-    
-    # Update search term in session state and perform search
+    # Update search term in session state
     if search_term != st.session_state.isic_search_term:
         st.session_state.isic_search_term = search_term
     
-    # Perform search when there's a search term (auto-search)
-    if st.session_state.isic_search_term and len(st.session_state.isic_search_term) >= 2:
-        search_results = search_isic_codes_enhanced(
-            st.session_state.isic_search_term, 
-            isic_client
-        )
+    # Display search results automatically when there's a search term
+    if st.session_state.isic_search_term and st.session_state.isic_df is not None:
+        with st.spinner("Searching ISIC codes..."):
+            search_results = search_isic_codes_enhanced(
+                st.session_state.isic_search_term, 
+                st.session_state.isic_df
+            )
         
         if search_results:
-            st.write(f"📋 **Found {len(search_results)} matching ISIC codes:**")
+            st.write(f"📋 Found {len(search_results)} matching ISIC codes:")
             
-            # Display results in a compact format with auto-select
+            # Display results in a compact format
             for i, result in enumerate(search_results):
-                col1, col2, col3, col4 = st.columns([3, 1, 1, 1])
+                col1, col2, col3 = st.columns([3, 1, 1])
                 
                 with col1:
-                    # Highlight matching terms
-                    display_text = f"**{result['code']}** - {result['title']}"
-                    st.write(display_text)
-                    if result.get('description') and result['description'] != result['title']:
-                        st.caption(f"{result['description']}")
+                    st.write(f"**{result['code']}** - {result['title']}")
                 
                 with col2:
                     if st.button("➕ Select", key=f"select_{i}"):
                         if result['display'] not in st.session_state.selected_isic_codes:
                             st.session_state.selected_isic_codes.append(result['display'])
-                            # Auto-populate business activities
-                            auto_populate_business_activities(result)
-                            st.success(f"✅ Added: {result['code']} - {result['title']}")
+                            # Auto-update business activities text
+                            current_activities = st.session_state.business_activities_text
+                            new_activity = f"{result['title']} (ISIC: {result['code']})"
+                            if current_activities:
+                                st.session_state.business_activities_text = current_activities + "; " + new_activity
+                            else:
+                                st.session_state.business_activities_text = new_activity
                             st.rerun()
                 
                 with col3:
-                    if st.button("ℹ️ Details", key=f"details_{i}"):
-                        # Show detailed information
-                        with st.expander(f"📋 Details for ISIC {result['code']}", expanded=True):
-                            st.write(f"**Code:** {result['code']}")
-                            st.write(f"**Title:** {result['title']}")
-                            if result.get('description'):
-                                st.write(f"**Description:** {result['description']}")
-                            if result.get('version'):
-                                st.write(f"**Version:** {result['version']}")
-                            if result.get('level'):
-                                st.write(f"**Level:** {result['level']}")
-                
-                with col4:
-                    if st.button("📋 Copy", key=f"copy_{i}"):
-                        # Copy to clipboard (simulated)
-                        st.success(f"📋 Copied: {result['code']} - {result['title']}")
+                    if st.button("ℹ️ Info", key=f"info_{i}"):
+                        st.info(f"**ISIC {result['code']}**: {result['title']}")
             
             st.markdown("---")
-        elif st.session_state.isic_search_term:
+        elif st.session_state.isic_search_term:  # Only show warning if there was a search term but no results
             st.warning("No ISIC codes found. Try different search terms.")
     
-    # Popular ISIC categories quick access
-    st.write("**🚀 Quick Access - Popular Categories:**")
-    quick_col1, quick_col2, quick_col3, quick_col4, quick_col5 = st.columns(5)
-    
-    with quick_col1:
-        if st.button("🌾 Agriculture", use_container_width=True, key="quick_agri"):
-            st.session_state.isic_search_term = "agriculture"
-            st.rerun()
-    
-    with quick_col2:
-        if st.button("🏗️ Construction", use_container_width=True, key="quick_constr"):
-            st.session_state.isic_search_term = "construction"
-            st.rerun()
-    
-    with quick_col3:
-        if st.button("🛒 Retail", use_container_width=True, key="quick_retail"):
-            st.session_state.isic_search_term = "retail"
-            st.rerun()
-    
-    with quick_col4:
-        if st.button("💻 IT Services", use_container_width=True, key="quick_it"):
-            st.session_state.isic_search_term = "computer"
-            st.rerun()
-    
-    with quick_col5:
-        if st.button("🏥 Healthcare", use_container_width=True, key="quick_health"):
-            st.session_state.isic_search_term = "health"
-            st.rerun()
-    
-    # Manual ISIC code entry with validation
+    # Manual ISIC code entry
     with st.expander("➕ Add Custom ISIC Code", expanded=False):
         manual_col1, manual_col2, manual_col3 = st.columns([2, 2, 1])
         
@@ -964,22 +1354,11 @@ def business_activities_section():
             st.write("")  # Spacer
             if st.button("Add Custom", key="add_custom_isic"):
                 if custom_code and custom_description:
-                    # Validate code format
-                    if isic_client.validate_isic_code(custom_code):
-                        custom_display = f"{custom_code} - {custom_description}"
-                        if custom_display not in st.session_state.selected_isic_codes:
-                            st.session_state.selected_isic_codes.append(custom_display)
-                            auto_populate_business_activities({
-                                'code': custom_code,
-                                'title': custom_description,
-                                'description': custom_description
-                            })
-                            st.success(f"✅ Added custom ISIC code: {custom_code}")
-                            st.rerun()
-                    else:
-                        st.warning(f"⚠️ '{custom_code}' doesn't appear to be a valid ISIC code format")
-                else:
-                    st.error("❌ Please enter both code and description")
+                    custom_display = f"{custom_code} - {custom_description}"
+                    if custom_display not in st.session_state.selected_isic_codes:
+                        st.session_state.selected_isic_codes.append(custom_display)
+                        st.success(f"Added custom ISIC code: {custom_code}")
+                        st.rerun()
     
     # Display selected ISIC codes
     if st.session_state.selected_isic_codes:
@@ -988,51 +1367,39 @@ def business_activities_section():
         # Group codes by category for better organization
         agri_codes = [code for code in st.session_state.selected_isic_codes if any(x in code for x in ['01', '02', '03'])]
         construction_codes = [code for code in st.session_state.selected_isic_codes if any(x in code for x in ['41', '42', '43'])]
-        retail_codes = [code for code in st.session_state.selected_isic_codes if any(x in code for x in ['45', '46', '47'])]
-        service_codes = [code for code in st.session_state.selected_isic_codes if any(x in code for x in ['55', '56', '62', '63', '64', '65', '66'])]
-        manufacturing_codes = [code for code in st.session_state.selected_isic_codes if any(x in code for x in ['10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '20', '21', '22', '23', '24', '25', '26', '27', '28', '29', '30', '31', '32'])]
-        other_codes = [code for code in st.session_state.selected_isic_codes if code not in agri_codes + construction_codes + retail_codes + service_codes + manufacturing_codes]
+        other_codes = [code for code in st.session_state.selected_isic_codes if code not in agri_codes + construction_codes]
         
         if agri_codes:
-            with st.expander("🌾 Agriculture, Forestry & Fishing", expanded=True):
+            with st.expander("🌾 Agriculture Codes", expanded=True):
                 for i, code in enumerate(agri_codes):
                     display_selected_isic_code(code, i, "agri")
         
-        if manufacturing_codes:
-            with st.expander("🏭 Manufacturing", expanded=True):
-                for i, code in enumerate(manufacturing_codes):
-                    display_selected_isic_code(code, i, "manuf")
-        
         if construction_codes:
-            with st.expander("🏗️ Construction", expanded=True):
+            with st.expander("🏗️ Construction Codes", expanded=True):
                 for i, code in enumerate(construction_codes):
                     display_selected_isic_code(code, i, "constr")
         
-        if retail_codes:
-            with st.expander("🛒 Retail & Wholesale", expanded=True):
-                for i, code in enumerate(retail_codes):
-                    display_selected_isic_code(code, i, "retail")
-        
-        if service_codes:
-            with st.expander("💼 Services", expanded=True):
-                for i, code in enumerate(service_codes):
-                    display_selected_isic_code(code, i, "service")
-        
         if other_codes:
-            with st.expander("📦 Other Sectors", expanded=True):
+            with st.expander("📦 Other Codes", expanded=True):
                 for i, code in enumerate(other_codes):
                     display_selected_isic_code(code, i, "other")
         
         # Summary
-        total_codes = len(st.session_state.selected_isic_codes)
-        st.info(f"**Total ISIC codes selected:** {total_codes}")
-        
-        # Clear all button
-        if st.button("🗑️ Clear All Selected Codes", key="clear_all_isic"):
-            st.session_state.selected_isic_codes = []
-            st.rerun()
+        st.info(f"**Total ISIC codes selected:** {len(st.session_state.selected_isic_codes)}")
     
     return business_activities
+
+def display_selected_isic_code(code, index, prefix):
+    """Display a selected ISIC code with remove option"""
+    col1, col2 = st.columns([4, 1])
+    
+    with col1:
+        st.write(f"• {code}")
+    
+    with col2:
+        if st.button("🗑️", key=f"remove_{prefix}_{index}"):
+            st.session_state.selected_isic_codes.pop(index)
+            st.rerun()
 
 # Initialize database - FIXED VERSION
 def init_db():
@@ -1214,41 +1581,6 @@ def add_missing_columns():
     except Exception as e:
         st.warning(f"Database schema update: {str(e)}")
         return False
-
-# Enhanced session state initialization
-def initialize_session_state():
-    defaults = {
-        'custom_procedures': [],
-        'custom_authorities': [],
-        'procedures_list': [],
-        'current_section': 'A',
-        'current_interview_id': None,
-        'form_data': {},
-        'selected_isic_codes': [],
-        'manual_isic_input': "",
-        'selected_isic_for_business': "",
-        'isic_search_term': "",
-        'show_detailed_form': False,
-        'use_template': False,
-        'interview_start_time': None,
-        'active_procedure_index': None,
-        'district_specific_notes': {},
-        'isic_df': None,
-        'business_activities_text': "",
-        'bulk_procedure_mode': False,
-        'quick_manual_mode': False,
-        'admin_logged_in': False,
-        'interviewer_logged_in': False,
-        'current_user': None,
-        'user_role': None,
-        'app_mode': 'login',
-        'database_initialized': False,
-        'isic_client': None
-    }
-    
-    for key, value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
 
 # Database functions
 def save_draft(data, interview_id=None):
@@ -1701,7 +2033,7 @@ def test_connection():
         st.error(f"❌ Failed to connect to SQLite Cloud: {str(e)}")
         return False
 
-# Section A - Business Profile with pyisic Integration
+# Section A - Business Profile
 def display_section_a():
     """Section A: Interview & Business Profile"""
     st.header("📋 SECTION A: Interview & Business Profile")
@@ -1810,47 +2142,1283 @@ def display_section_a():
                 st.session_state.current_interview_id = interview_id
                 st.success("✅ Section A saved successfully!")
     
-    # ISIC Code section with pyisic integration
+    # ISIC Code section
     st.markdown("---")
     business_activities_section()
 
-# [Include all other sections B, C, D and admin functions from previous complete versions]
-# For brevity, I'm showing the key integration points. The other sections remain the same.
-
-# Main Application
-def main():
-    # Initialize session state first
-    initialize_session_state()
+# Section B - Registration & Licensing
+def enhanced_section_b():
+    """Enhanced Section B with multiple entry modes"""
+    st.header("📑 SECTION B: REGISTRATION & LICENSING LANDSCAPE")
     
-    # Test database connection first
-    if not test_connection():
-        st.error("Cannot proceed without database connection")
-        st.info("Please check your SQLite Cloud connection string and try again.")
+    # Entry mode selection
+    st.write("**Select Entry Mode:**")
+    mode_col1, mode_col2, mode_col3 = st.columns(3)
+    
+    with mode_col1:
+        if st.button("⚡ Quick Manual", use_container_width=True, key="quick_manual_btn"):
+            st.session_state.bulk_procedure_mode = False
+            st.session_state.quick_manual_mode = True
+            st.rerun()
+    
+    with mode_col2:
+        if st.button("🔧 Single Detailed", use_container_width=True, key="single_detailed_btn"):
+            st.session_state.bulk_procedure_mode = False
+            st.session_state.quick_manual_mode = False
+            st.rerun()
+    
+    with mode_col3:
+        if st.button("📊 Bulk Templates", use_container_width=True, key="bulk_templates_btn"):
+            st.session_state.bulk_procedure_mode = True
+            st.session_state.quick_manual_mode = False
+            st.rerun()
+    
+    # Display current mode
+    if st.session_state.get('quick_manual_mode', False):
+        st.info("⚡ **Quick Manual Mode** - Fast entry for individual procedures")
+        quick_manual_procedure()
+    elif st.session_state.bulk_procedure_mode:
+        st.info("📊 **Bulk Templates Mode** - Add multiple procedures using templates")
+        enhanced_bulk_procedures_capture()
+    else:
+        st.info("🔧 **Single Detailed Mode** - Comprehensive data capture for individual procedures")
+        single_procedure_capture()
+    
+    # Display and manage existing procedures
+    interactive_procedures_manager()
+    
+    # Enhanced save options
+    st.markdown("---")
+    save_col1, save_col2, save_col3 = st.columns(3)
+    
+    with save_col1:
+        if st.button("💾 Save Procedures", use_container_width=True, key="save_procedures_main"):
+            st.session_state.form_data['procedure_data'] = st.session_state.procedures_list
+            interview_id = save_draft(st.session_state.form_data, st.session_state.current_interview_id)
+            if interview_id:
+                st.session_state.current_interview_id = interview_id
+                st.success(f"✅ Saved {len(st.session_state.procedures_list)} procedures!")
+    
+    with save_col2:
+        if st.button("📊 Generate Report", use_container_width=True, key="generate_report"):
+            generate_procedures_report()
+    
+    with save_col3:
+        if st.button("🔄 Reset Section", use_container_width=True, key="reset_section"):
+            if st.session_state.procedures_list:
+                if st.checkbox("Confirm reset all procedures in this section"):
+                    st.session_state.procedures_list = []
+                    st.rerun()
+            else:
+                st.info("No procedures to reset")
+
+def quick_manual_procedure():
+    """Quick manual procedure entry"""
+    st.subheader("⚡ Quick Manual Entry")
+    
+    with st.form("quick_manual_form"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            quick_procedure = st.text_input(
+                "Procedure Name *", 
+                placeholder="e.g., Business License, Environmental Permit",
+                key="quick_procedure"
+            )
+            quick_authority = st.text_input(
+                "Regulatory Body *",
+                placeholder="e.g., Local Council, ZRA, PACRA",
+                key="quick_authority"
+            )
+            quick_status = st.selectbox(
+                "Status",
+                ["Not Started", "In Progress", "Completed", "Delayed"],
+                index=2,
+                key="quick_status"
+            )
+        
+        with col2:
+            quick_cost = st.number_input(
+                "Total Cost (ZMW) *", 
+                min_value=0.0, 
+                value=0.0,
+                key="quick_cost"
+            )
+            quick_days = st.number_input(
+                "Total Days *",
+                min_value=0,
+                value=30,
+                key="quick_days"
+            )
+            quick_mode = st.selectbox(
+                "Application Mode",
+                APPLICATION_MODES,
+                key="quick_mode"
+            )
+        
+        complexity_help = st.radio(
+            "How complex was this procedure?",
+            ["Very Simple", "Somewhat Simple", "Moderate", "Complex", "Very Complex"],
+            horizontal=True,
+            key="quick_complexity"
+        )
+        
+        complexity_map = {
+            "Very Simple": 1, "Somewhat Simple": 2, "Moderate": 3, 
+            "Complex": 4, "Very Complex": 5
+        }
+        
+        if st.form_submit_button("🚀 Add Procedure (Quick)", use_container_width=True):
+            if quick_procedure and quick_authority:
+                procedure_data = {
+                    'procedure': quick_procedure,
+                    'authority': quick_authority,
+                    'status': quick_status,
+                    'prep_days': max(1, quick_days // 3),
+                    'wait_days': max(1, quick_days - (quick_days // 3)),
+                    'total_days': quick_days,
+                    'official_fees': quick_cost,
+                    'unofficial_payments': 0.0,
+                    'travel_costs': 0.0,
+                    'external_support': 'No',
+                    'external_cost': 0.0,
+                    'complexity': complexity_map[complexity_help],
+                    'renewable': 'Yes',
+                    'renewal_frequency': 'Annual',
+                    'application_mode': quick_mode,
+                    'documents': [],
+                    'challenges': '',
+                    'follow_ups': 2
+                }
+                
+                st.session_state.procedures_list.append(procedure_data)
+                st.success(f"✅ Added: {quick_procedure}")
+                st.rerun()
+            else:
+                st.error("Please fill in Procedure Name and Regulatory Body")
+
+def single_procedure_capture():
+    """Single procedure detailed capture"""
+    st.subheader("🔧 Detailed Procedure Analysis")
+    
+    with st.form("single_procedure_form"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            procedure_name = st.text_input("Procedure/License Name *", 
+                                         placeholder="e.g., Business License, Environmental Permit",
+                                         key="proc_name_single")
+            regulatory_authority = st.text_input("Regulatory Body *", 
+                                               placeholder="e.g., Local Council, ZRA, PACRA",
+                                               key="authority_single")
+        
+        with col2:
+            current_status = st.selectbox("Current Status", 
+                                        ["Not Started", "In Progress", "Completed", "Delayed", "Rejected"],
+                                        key="status_single")
+            application_mode = st.selectbox("Mode of Application *", APPLICATION_MODES, key="app_mode_single")
+        
+        st.write("⏱️ Time Analysis")
+        time_col1, time_col2, time_col3, time_col4 = st.columns(4)
+        
+        with time_col1:
+            prep_days = st.number_input("Preparation Days", min_value=0, value=7,
+                                      help="Time spent gathering documents",
+                                      key="prep_days_single")
+        with time_col2:
+            wait_days = st.number_input("Waiting Days", min_value=0, value=21,
+                                      help="Time waiting for approval",
+                                      key="wait_days_single")
+        with time_col3:
+            follow_ups = st.number_input("Number of Follow-ups", min_value=0, value=2,
+                                       key="follow_ups_single")
+        with time_col4:
+            total_days = st.number_input("Total Calendar Days *", min_value=0, value=28,
+                                       key="total_days_single")
+        
+        st.write("💰 Cost Analysis")
+        cost_col1, cost_col2, cost_col3 = st.columns(3)
+        
+        with cost_col1:
+            official_fees = st.number_input("Official Fees (ZMW) *", min_value=0.0, value=0.0,
+                                          key="official_fees_single")
+        with cost_col2:
+            unofficial_payments = st.number_input("Unofficial Payments (ZMW)", min_value=0.0, value=0.0,
+                                                key="unofficial_single")
+        with cost_col3:
+            travel_costs = st.number_input("Travel & Incidentals (ZMW)", min_value=0.0, value=0.0,
+                                         key="travel_costs_single")
+        
+        st.write("🛠️ External Support")
+        support_col1, support_col2, support_col3 = st.columns(3)
+        
+        with support_col1:
+            external_support = st.radio("Hired External Support?", ["No", "Yes"], 
+                                      horizontal=True, key="external_support_single")
+        
+        if 'external_support_active' not in st.session_state:
+            st.session_state.external_support_active = False
+        
+        if external_support == "Yes":
+            st.session_state.external_support_active = True
+        else:
+            st.session_state.external_support_active = False
+        
+        with support_col2:
+            if st.session_state.external_support_active:
+                external_cost = st.number_input("Support Cost (ZMW)", min_value=0.0, value=0.0,
+                                              key="external_cost_single")
+            else:
+                external_cost = 0.0
+                st.number_input("Support Cost (ZMW)", min_value=0.0, value=0.0, 
+                              disabled=True, key="external_cost_disabled")
+        
+        with support_col3:
+            if st.session_state.external_support_active:
+                external_reason = st.selectbox("Primary Reason", 
+                                             ["Saves Time", "Expertise Required", "Connections/Relationships", "Complexity"],
+                                             key="external_reason_single")
+            else:
+                external_reason = ""
+                st.selectbox("Primary Reason", 
+                           ["Saves Time", "Expertise Required", "Connections/Relationships", "Complexity"],
+                           disabled=True, key="external_reason_disabled")
+        
+        st.write("📊 Assessment")
+        assess_col1, assess_col2, assess_col3 = st.columns(3)
+        
+        with assess_col1:
+            complexity = st.slider("Complexity (1-5)", 1, 5, 3,
+                                 help="1=Very Simple, 5=Extremely Complex",
+                                 key="complexity_single")
+        with assess_col2:
+            renewable = st.radio("Renewable?", ["Yes", "No"], horizontal=True,
+                               key="renewable_single")
+        with assess_col3:
+            if renewable == "Yes":
+                renewal_freq = st.text_input("Renewal Frequency", placeholder="e.g., Annual, 2 years",
+                                           key="renewal_freq_single")
+            else:
+                renewal_freq = "N/A"
+                st.text_input("Renewal Frequency", value="N/A", disabled=True, key="renewal_freq_disabled")
+        
+        st.write("📄 Requirements & Challenges")
+        
+        num_documents = st.number_input("Number of Required Documents", min_value=0, max_value=15, value=0,
+                                      key="num_docs_single")
+        documents = []
+        for i in range(num_documents):
+            doc = st.text_input(f"Document {i+1}", placeholder=f"Document name {i+1}", key=f"doc_single_{i}")
+            if doc:
+                documents.append(doc)
+        
+        challenges = st.text_area("Challenges & Observations", 
+                                placeholder="Describe any difficulties, delays, or observations...",
+                                height=80,
+                                key="challenges_single")
+        
+        if st.form_submit_button("➕ Add This Procedure", use_container_width=True):
+            if procedure_name and regulatory_authority:
+                procedure_data = {
+                    'procedure': procedure_name,
+                    'authority': regulatory_authority,
+                    'status': current_status,
+                    'prep_days': prep_days,
+                    'wait_days': wait_days,
+                    'follow_ups': follow_ups,
+                    'total_days': total_days,
+                    'official_fees': official_fees,
+                    'unofficial_payments': unofficial_payments,
+                    'travel_costs': travel_costs,
+                    'external_support': external_support,
+                    'external_cost': external_cost if external_support == "Yes" else 0.0,
+                    'external_reason': external_reason if external_support == "Yes" else "",
+                    'complexity': complexity,
+                    'renewable': renewable,
+                    'renewal_frequency': renewal_freq,
+                    'application_mode': application_mode,
+                    'documents': documents,
+                    'challenges': challenges
+                }
+                
+                st.session_state.procedures_list.append(procedure_data)
+                st.success(f"✅ Added: {procedure_name}")
+                st.rerun()
+            else:
+                st.error("Please fill in required fields (Procedure Name and Regulatory Body)")
+
+def enhanced_bulk_procedures_capture():
+    """Enhanced bulk capture with more options"""
+    st.subheader("📊 Enhanced Bulk Procedure Capture")
+    
+    sector = st.session_state.form_data.get('primary_sector', 'Agribusiness')
+    
+    expanded_licenses = {
+        "Agribusiness": {
+            "PACRA Business Registration": {
+                "authority": "PACRA", "renewable": "No", "renewal_frequency": "One-time",
+                "common_documents": ["Application form", "Business name reservation", "Identification documents"],
+                "typical_cost": 1000, "typical_days": 14, "complexity": 3
+            },
+            "ZRA Tax Registration": {
+                "authority": "ZRA", "renewable": "No", "renewal_frequency": "One-time", 
+                "common_documents": ["PACRA certificate", "Business registration", "Owner identification"],
+                "typical_cost": 0, "typical_days": 7, "complexity": 2
+            },
+            "Local Trading License": {
+                "authority": "Local Council", "renewable": "Yes", "renewal_frequency": "Annual",
+                "common_documents": ["Application form", "Business premises details", "Health certificate"],
+                "typical_cost": 1500, "typical_days": 21, "complexity": 4
+            }
+        },
+        "Construction": {
+            "NCC Registration": {
+                "authority": "NCC", "renewable": "Yes", "renewal_frequency": "Annual",
+                "common_documents": ["Company registration", "Technical staff certificates", "Equipment list"],
+                "typical_cost": 5000, "typical_days": 30, "complexity": 7
+            },
+            "Building Permit": {
+                "authority": "Local Council", "renewable": "No", "renewal_frequency": "Project-based",
+                "common_documents": ["Architectural drawings", "Structural designs", "Site plans"],
+                "typical_cost": 2500, "typical_days": 45, "complexity": 6
+            }
+        }
+    }
+    
+    st.write("**🚀 Quick Actions**")
+    quick_col1, quick_col2, quick_col3, quick_col4 = st.columns(4)
+    
+    with quick_col1:
+        if st.button("🏗️ All Construction", use_container_width=True, key="all_constr_btn"):
+            add_all_sector_templates("Construction", expanded_licenses)
+    
+    with quick_col2:
+        if st.button("🌾 All Agribusiness", use_container_width=True, key="all_agri_btn"):
+            add_all_sector_templates("Agribusiness", expanded_licenses)
+    
+    with quick_col3:
+        if st.button("🏛️ Common National", use_container_width=True, key="common_national_btn"):
+            add_common_national_licenses(sector)
+    
+    with quick_col4:
+        if st.button("🗑️ Clear All", use_container_width=True, key="clear_all_btn"):
+            st.session_state.procedures_list = []
+            st.rerun()
+    
+    with st.form("enhanced_bulk_form"):
+        st.write("**📋 Bulk License Selection**")
+        
+        sector_licenses = expanded_licenses.get(sector, {})
+        selected_licenses = []
+        
+        for license_name, license_data in sector_licenses.items():
+            if st.checkbox(f"{license_name} ({license_data['authority']})", key=f"bulk_{license_name}"):
+                selected_licenses.append((license_name, license_data))
+        
+        if selected_licenses:
+            st.write("**⚙️ Bulk Configuration**")
+            config_col1, config_col2 = st.columns(2)
+            
+            with config_col1:
+                bulk_status = st.selectbox("Status for all", ["Completed", "In Progress", "Not Started"], key="bulk_status")
+                bulk_mode = st.selectbox("Application Mode for all", APPLICATION_MODES, key="bulk_mode")
+            
+            with config_col2:
+                cost_adjust = st.number_input("Cost Adjustment (%)", min_value=-100, max_value=100, value=0, key="cost_adj")
+                time_adjust = st.number_input("Time Adjustment (%)", min_value=-50, max_value=200, value=0, key="time_adj")
+        
+        if st.form_submit_button("📥 Add Selected Licenses", use_container_width=True):
+            added_count = 0
+            for license_name, license_data in selected_licenses:
+                template_data = expanded_licenses[sector][license_name]
+                
+                base_cost = template_data.get('typical_cost', 0)
+                adjusted_cost = base_cost * (1 + cost_adjust / 100)
+                
+                base_days = template_data.get('typical_days', 30)
+                adjusted_days = max(1, int(base_days * (1 + time_adjust / 100)))
+                
+                procedure = {
+                    'procedure': license_name,
+                    'authority': license_data['authority'],
+                    'status': bulk_status,
+                    'prep_days': max(1, adjusted_days // 3),
+                    'wait_days': max(1, adjusted_days - (adjusted_days // 3)),
+                    'total_days': adjusted_days,
+                    'official_fees': adjusted_cost,
+                    'unofficial_payments': 0.0,
+                    'travel_costs': 0.0,
+                    'external_support': 'No',
+                    'external_cost': 0.0,
+                    'complexity': template_data.get('complexity', 3),
+                    'renewable': license_data['renewable'],
+                    'renewal_frequency': license_data['renewal_frequency'],
+                    'application_mode': bulk_mode,
+                    'documents': template_data['common_documents'],
+                    'challenges': '',
+                    'follow_ups': 2
+                }
+                
+                existing_names = [p['procedure'] for p in st.session_state.procedures_list]
+                if license_name not in existing_names:
+                    st.session_state.procedures_list.append(procedure)
+                    added_count += 1
+            
+            st.success(f"✅ Added {added_count} procedures!")
+            st.rerun()
+
+def add_all_sector_templates(sector, licenses_data):
+    """Add all templates for a sector"""
+    if sector in licenses_data:
+        added_count = 0
+        for license_name, license_data in licenses_data[sector].items():
+            existing_names = [p['procedure'] for p in st.session_state.procedures_list]
+            if license_name not in existing_names:
+                procedure = {
+                    'procedure': license_name,
+                    'authority': license_data['authority'],
+                    'status': 'Completed',
+                    'prep_days': max(1, license_data.get('typical_days', 30) // 3),
+                    'wait_days': max(1, license_data.get('typical_days', 30) - (license_data.get('typical_days', 30) // 3)),
+                    'total_days': license_data.get('typical_days', 30),
+                    'official_fees': license_data.get('typical_cost', 0),
+                    'unofficial_payments': 0.0,
+                    'travel_costs': 0.0,
+                    'external_support': 'No',
+                    'external_cost': 0.0,
+                    'complexity': license_data.get('complexity', 3),
+                    'renewable': license_data['renewable'],
+                    'renewal_frequency': license_data['renewal_frequency'],
+                    'application_mode': 'Mixed',
+                    'documents': license_data['common_documents'],
+                    'challenges': '',
+                    'follow_ups': 2
+                }
+                st.session_state.procedures_list.append(procedure)
+                added_count += 1
+        
+        st.success(f"✅ Added {added_count} {sector} procedures!")
+        st.rerun()
+
+def add_common_national_licenses(sector):
+    """Add common national licenses across sectors"""
+    common_national = {
+        "PACRA Business Registration": {
+            "authority": "PACRA", "renewable": "No", "typical_cost": 1000, "typical_days": 14, "complexity": 3
+        },
+        "ZRA Tax Registration": {
+            "authority": "ZRA", "renewable": "No", "typical_cost": 0, "typical_days": 7, "complexity": 2
+        }
+    }
+    
+    added_count = 0
+    for license_name, license_data in common_national.items():
+        existing_names = [p['procedure'] for p in st.session_state.procedures_list]
+        if license_name not in existing_names:
+            procedure = {
+                'procedure': license_name,
+                'authority': license_data['authority'],
+                'status': 'Completed',
+                'prep_days': max(1, license_data.get('typical_days', 14) // 2),
+                'wait_days': max(1, license_data.get('typical_days', 14) - (license_data.get('typical_days', 14) // 2)),
+                'total_days': license_data.get('typical_days', 14),
+                'official_fees': license_data.get('typical_cost', 0),
+                'unofficial_payments': 0.0,
+                'travel_costs': 0.0,
+                'external_support': 'No',
+                'external_cost': 0.0,
+                'complexity': license_data.get('complexity', 3),
+                'renewable': license_data['renewable'],
+                'renewal_frequency': 'One-time',
+                'application_mode': 'Mixed',
+                'documents': [],
+                'challenges': '',
+                'follow_ups': 1
+            }
+            st.session_state.procedures_list.append(procedure)
+            added_count += 1
+    
+    st.success(f"✅ Added {added_count} common national licenses!")
+    st.rerun()
+
+def interactive_procedures_manager():
+    """Manage procedures with enhanced editing"""
+    if not st.session_state.procedures_list:
+        st.info("📝 No procedures added yet. Use the forms above to add procedures.")
         return
     
-    # Initialize database
-    if not st.session_state.get('database_initialized', False):
-        with st.spinner("🔄 Setting up database..."):
-            if check_and_fix_database():
-                st.session_state.database_initialized = True
-            else:
-                st.error("Failed to initialize database. Please check your connection.")
-                return
+    st.subheader("📋 Procedures Management")
     
-    # Initialize pyisic client
-    if st.session_state.isic_client is None:
-        st.session_state.isic_client = PyISICClient()
+    total_procedures = len(st.session_state.procedures_list)
+    total_cost = sum(p['official_fees'] + p.get('unofficial_payments', 0) + p.get('travel_costs', 0) for p in st.session_state.procedures_list)
+    total_time = sum(p['total_days'] for p in st.session_state.procedures_list)
+    avg_complexity = sum(p['complexity'] for p in st.session_state.procedures_list) / total_procedures
     
-    # Run database migrations
-    add_missing_columns()
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Procedures", total_procedures)
+    with col2:
+        st.metric("Total Cost", f"ZMW {total_cost:,.0f}")
+    with col3:
+        st.metric("Total Time", f"{total_time} days")
+    with col4:
+        st.metric("Avg Complexity", f"{avg_complexity:.1f}/5")
     
-    # Route based on login status
-    if not st.session_state.interviewer_logged_in and not st.session_state.admin_logged_in:
-        login_system()
-    elif st.session_state.admin_logged_in:
-        admin_navigation()
-    else:
-        data_collection_navigation()
+    for i, procedure in enumerate(st.session_state.procedures_list):
+        with st.container():
+            st.markdown(f"**{i+1}. {procedure['procedure']}** - {procedure['authority']} ({procedure['status']})")
+            
+            col1, col2 = st.columns([3, 1])
+            
+            with col1:
+                info_col1, info_col2, info_col3 = st.columns(3)
+                
+                with info_col1:
+                    st.write(f"**Status:** {procedure['status']}")
+                    st.write(f"**Complexity:** {procedure['complexity']}/5")
+                    st.write(f"**Application Mode:** {procedure['application_mode']}")
+                
+                with info_col2:
+                    st.write(f"**Prep Time:** {procedure['prep_days']} days")
+                    st.write(f"**Wait Time:** {procedure['wait_days']} days")
+                    st.write(f"**Total Time:** {procedure['total_days']} days")
+                
+                with info_col3:
+                    st.write(f"**Official Fees:** ZMW {procedure['official_fees']:,.0f}")
+                    if procedure.get('unofficial_payments', 0) > 0:
+                        st.write(f"**Unofficial:** ZMW {procedure['unofficial_payments']:,.0f}")
+            
+            with col2:
+                if st.button("✏️ Edit", key=f"edit_proc_{i}"):
+                    st.session_state.active_procedure_index = i
+                
+                if st.button("🗑️ Delete", key=f"delete_proc_{i}"):
+                    st.session_state.procedures_list.pop(i)
+                    st.rerun()
+            
+            if st.session_state.get('active_procedure_index') == i:
+                with st.form(f"edit_procedure_{i}"):
+                    st.write("**Edit Procedure**")
+                    
+                    edit_col1, edit_col2 = st.columns(2)
+                    with edit_col1:
+                        new_status = st.selectbox("Status", ["Not Started", "In Progress", "Completed", "Delayed", "Rejected"], 
+                                                index=["Not Started", "In Progress", "Completed", "Delayed", "Rejected"].index(procedure['status']),
+                                                key=f"edit_status_{i}")
+                        new_complexity = st.slider("Complexity", 1, 5, procedure['complexity'],
+                                                 key=f"edit_complexity_{i}")
+                    with edit_col2:
+                        new_official_fees = st.number_input("Official Fees", min_value=0.0, value=procedure['official_fees'],
+                                                          key=f"edit_fees_{i}")
+                        new_unofficial = st.number_input("Unofficial Payments", min_value=0.0, value=procedure.get('unofficial_payments', 0.0),
+                                                       key=f"edit_unofficial_{i}")
+                    
+                    new_application_mode = st.selectbox("Application Mode", APPLICATION_MODES, 
+                                                      index=APPLICATION_MODES.index(procedure['application_mode']) if procedure['application_mode'] in APPLICATION_MODES else 0,
+                                                      key=f"edit_app_mode_{i}")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.form_submit_button("💾 Save Changes", use_container_width=True):
+                            st.session_state.procedures_list[i].update({
+                                'status': new_status,
+                                'complexity': new_complexity,
+                                'official_fees': new_official_fees,
+                                'unofficial_payments': new_unofficial,
+                                'application_mode': new_application_mode
+                            })
+                            st.session_state.active_procedure_index = None
+                            st.rerun()
+                    
+                    with col2:
+                        if st.form_submit_button("❌ Cancel", use_container_width=True):
+                            st.session_state.active_procedure_index = None
+                            st.rerun()
+            
+            st.markdown("---")
 
+def generate_procedures_report():
+    """Generate a quick procedures report"""
+    if not st.session_state.procedures_list:
+        st.warning("No procedures to report")
+        return
+    
+    total_cost = sum(p['official_fees'] + p.get('unofficial_payments', 0) for p in st.session_state.procedures_list)
+    total_time = sum(p['total_days'] for p in st.session_state.procedures_list)
+    avg_complexity = sum(p['complexity'] for p in st.session_state.procedures_list) / len(st.session_state.procedures_list)
+    
+    st.subheader("📈 Quick Procedures Report")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Procedures", len(st.session_state.procedures_list))
+    with col2:
+        st.metric("Total Cost", f"ZMW {total_cost:,.0f}")
+    with col3:
+        st.metric("Total Time", f"{total_time} days")
+    with col4:
+        st.metric("Avg Complexity", f"{avg_complexity:.1f}/5")
+
+# Section C - Ongoing Compliance
+def display_section_c():
+    """Section C - Ongoing Compliance"""
+    st.header("⏱️ SECTION C: Ongoing Compliance Burden")
+    
+    with st.form("section_c_form"):
+        st.subheader("C1. Time Allocation for Compliance")
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            local_time = st.slider("Local Council Time (%)", 0, 100, 0, key="local_time")
+        with col2:
+            national_time = st.slider("National Level Time (%)", 0, 100, 0, key="national_time")
+        with col3:
+            dk_time = st.slider("Don't Know/Other (%)", 0, 100, 0, key="dk_time")
+        
+        total_time = local_time + national_time + dk_time
+        if total_time != 100:
+            st.warning(f"⚠️ Percentages sum to {total_time}%. Should be 100%.")
+        
+        st.subheader("C2. Cost Assessment")
+        cost_percentage = st.slider("Compliance costs as percentage of annual turnover (%)", 
+                                  0.0, 50.0, 0.0, 0.5, key="cost_percentage")
+        
+        st.subheader("C3. Comparative Assessment")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**Number of Permits vs 2 Years Ago**")
+            permit_national = st.radio("National Permits", ["More", "Same", "Fewer", "Don't Know"], key="permit_national")
+            permit_local = st.radio("Local Council Permits", ["More", "Same", "Fewer", "Don't Know"], key="permit_local")
+        
+        with col2:
+            st.write("**Cost per Permit vs 2 Years Ago**")
+            cost_national = st.radio("National Permits Cost", ["More", "Same", "Less", "Don't Know"], key="cost_national")
+            cost_local = st.radio("Local Council Permits Cost", ["More", "Same", "Less", "Don't Know"], key="cost_local")
+        
+        st.subheader("C4. Business Climate Rating")
+        climate_rating = st.select_slider("Rate this year vs last year", 
+                                        options=["Worse", "Same", "Better"],
+                                        key="climate_rating")
+        
+        if st.form_submit_button("💾 Save Section C", use_container_width=True):
+            st.session_state.form_data.update({
+                'completion_time_local': local_time,
+                'completion_time_national': national_time,
+                'completion_time_dk': dk_time,
+                'compliance_cost_percentage': cost_percentage,
+                'permit_comparison_national': permit_national,
+                'permit_comparison_local': permit_local,
+                'cost_comparison_national': cost_national,
+                'cost_comparison_local': cost_local,
+                'business_climate_rating': climate_rating
+            })
+            
+            interview_id = save_draft(st.session_state.form_data, st.session_state.current_interview_id)
+            if interview_id:
+                st.session_state.current_interview_id = interview_id
+                st.success("✅ Section C saved successfully!")
+
+# Section D - Reform Priorities
+def display_section_d():
+    """Section D - Reform Priorities"""
+    st.header("💡 SECTION D: Reform Priorities & Recommendations")
+    
+    with st.form("section_d_form"):
+        st.subheader("Reform Recommendations")
+        
+        st.write("""
+        *If you could advise the government on specific, actionable reforms 
+        to reduce the compliance burden, what would they be?*
+        """)
+        
+        st.write("**🎯 Top Reform Priorities**")
+        
+        reform_options = [
+            "Simplify application procedures",
+            "Reduce number of required documents",
+            "Standardize forms across agencies",
+            "Create single-window clearance system",
+            "Set maximum processing time limits",
+            "Implement online tracking systems",
+            "Lower official fees for small businesses",
+            "Provide fee waivers for startups",
+            "Full online application system",
+            "Digital document submission",
+            "Publish clear requirements online",
+            "Provide status updates automatically",
+            "Better inter-agency coordination",
+            "Training for regulatory staff"
+        ]
+        
+        selected_reforms = []
+        for reform in reform_options:
+            if st.checkbox(reform, key=f"reform_{reform}"):
+                selected_reforms.append(reform)
+        
+        st.subheader("💡 Additional Custom Recommendations")
+        custom_reforms = st.text_area(
+            "Enter additional reform priorities:",
+            placeholder="Add your own specific recommendations...",
+            height=100,
+            key="custom_reforms"
+        )
+        
+        if custom_reforms:
+            custom_list = [r.strip() for r in custom_reforms.split('\n') if r.strip()]
+            selected_reforms.extend(custom_list)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            save_btn = st.form_submit_button("💾 Save Section D", use_container_width=True)
+        with col2:
+            submit_btn = st.form_submit_button("🚀 Submit Complete Interview", use_container_width=True)
+        
+        if save_btn:
+            st.session_state.form_data['reform_priorities'] = selected_reforms
+            interview_id = save_draft(st.session_state.form_data, st.session_state.current_interview_id)
+            if interview_id:
+                st.session_state.current_interview_id = interview_id
+                st.success("✅ Section D saved successfully!")
+        
+        if submit_btn:
+            st.session_state.form_data['reform_priorities'] = selected_reforms
+            interview_id = save_draft(st.session_state.form_data, st.session_state.current_interview_id)
+            if interview_id and submit_final(interview_id):
+                st.balloons()
+                st.success("🎉 Interview submitted successfully!")
+                show_completion_actions()
+
+def show_completion_actions():
+    """Show actions after interview completion"""
+    st.subheader("🎉 Interview Completed!")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        if st.button("📊 View Analysis", use_container_width=True, key="view_analysis_btn"):
+            st.session_state.current_section = 'Dashboard'
+            st.rerun()
+    
+    with col2:
+        if st.button("📋 Start New Interview", use_container_width=True, key="new_interview_complete_btn"):
+            reset_interview()
+    
+    with col3:
+        if st.button("🏠 Return to Dashboard", use_container_width=True, key="return_dashboard_btn"):
+            st.session_state.current_section = 'Dashboard'
+            st.rerun()
+
+# Main application function
+def main():
+    """Main application function"""
+    
+    # Display login or main app
+    if not st.session_state.logged_in:
+        display_login()
+    else:
+        display_main_app()
+
+def display_login():
+    """Display login interface"""
+    st.title("🇿🇲 Zambia Regulatory Compliance Survey")
+    st.markdown("---")
+    
+    tab1, tab2 = st.tabs(["📝 Interviewer Login", "👨‍💼 Admin/Researcher Login"])
+    
+    with tab1:
+        st.subheader("Interviewer Access")
+        interviewer = st.selectbox("Select Interviewer", INTERVIEWERS)
+        password = st.text_input("Password", type="password", key="interviewer_pwd")
+        
+        if st.button("Login as Interviewer", type="primary", use_container_width=True):
+            if (interviewer in INTERVIEWER_CREDENTIALS and 
+                password == INTERVIEWER_CREDENTIALS[interviewer]["password"]):
+                st.session_state.logged_in = True
+                st.session_state.current_user = interviewer
+                st.session_state.user_role = "interviewer"
+                st.session_state.interviewer_logged_in = True
+                st.success(f"✅ Welcome {interviewer}!")
+                st.rerun()
+            else:
+                st.error("❌ Invalid credentials")
+    
+    with tab2:
+        st.subheader("Admin/Researcher Access")
+        admin_user = st.text_input("Username", key="admin_user")
+        admin_password = st.text_input("Password", type="password", key="admin_pwd")
+        
+        if st.button("Login as Admin/Researcher", type="primary", use_container_width=True):
+            if (admin_user in ADMIN_CREDENTIALS and 
+                admin_password == ADMIN_CREDENTIALS[admin_user]["password"]):
+                st.session_state.logged_in = True
+                st.session_state.current_user = admin_user
+                st.session_state.user_role = ADMIN_CREDENTIALS[admin_user]["role"]
+                st.session_state.admin_logged_in = True
+                st.success(f"✅ Welcome {admin_user}!")
+                st.rerun()
+            else:
+                st.error("❌ Invalid credentials")
+
+def display_main_app():
+    """Display main application after login"""
+    
+    # Sidebar navigation
+    with st.sidebar:
+        st.title(f"Welcome, {st.session_state.current_user}!")
+        st.markdown(f"*Role: {st.session_state.user_role}*")
+        st.markdown("---")
+        
+        # Navigation based on user role
+        if st.session_state.interviewer_logged_in:
+            st.subheader("📋 Survey Navigation")
+            
+            nav_options = [
+                "🏠 Dashboard",
+                "📝 Section A: Business Information",
+                "📊 Section B: Regulatory Procedures", 
+                "⏱️ Section C: Compliance Time & Cost",
+                "💡 Section D: Reform Priorities",
+                "📋 Draft Management"
+            ]
+            
+            selected_nav = st.radio("Go to:", nav_options)
+            
+            # Map navigation to sections
+            if selected_nav == "🏠 Dashboard":
+                st.session_state.current_section = 'Dashboard'
+            elif selected_nav == "📝 Section A: Business Information":
+                st.session_state.current_section = 'A'
+            elif selected_nav == "📊 Section B: Regulatory Procedures":
+                st.session_state.current_section = 'B'
+            elif selected_nav == "⏱️ Section C: Compliance Time & Cost":
+                st.session_state.current_section = 'C'
+            elif selected_nav == "💡 Section D: Reform Priorities":
+                st.session_state.current_section = 'D'
+            elif selected_nav == "📋 Draft Management":
+                st.session_state.current_section = 'Draft_Dashboard'
+        
+        elif st.session_state.admin_logged_in:
+            st.subheader("👨‍💼 Admin Navigation")
+            
+            admin_nav_options = [
+                "📊 Data Overview",
+                "👥 Interviewer Management", 
+                "📋 Draft Management",
+                "📈 Analytics & Reports",
+                "⚙️ System Settings"
+            ]
+            
+            selected_admin_nav = st.radio("Go to:", admin_nav_options)
+            
+            # Map admin navigation
+            if selected_admin_nav == "📊 Data Overview":
+                st.session_state.current_section = 'Admin_Dashboard'
+            elif selected_admin_nav == "👥 Interviewer Management":
+                st.session_state.current_section = 'Admin_Interviewers'
+            elif selected_admin_nav == "📋 Draft Management":
+                st.session_state.current_section = 'Draft_Dashboard'
+            elif selected_admin_nav == "📈 Analytics & Reports":
+                st.session_state.current_section = 'Admin_Analytics'
+            elif selected_admin_nav == "⚙️ System Settings":
+                st.session_state.current_section = 'Admin_Settings'
+        
+        # Quick draft access for interviewers
+        if st.session_state.interviewer_logged_in:
+            display_draft_quick_access()
+        
+        # Logout button
+        st.markdown("---")
+        if st.button("🚪 Logout", use_container_width=True):
+            st.session_state.logged_in = False
+            st.session_state.current_user = None
+            st.session_state.user_role = None
+            st.session_state.interviewer_logged_in = False
+            st.session_state.admin_logged_in = False
+            reset_interview()
+            st.rerun()
+    
+    # Main content area
+    if st.session_state.current_section == 'Dashboard':
+        display_dashboard()
+    elif st.session_state.current_section == 'A':
+        display_section_a()
+    elif st.session_state.current_section == 'B':
+        enhanced_section_b()
+    elif st.session_state.current_section == 'C':
+        display_section_c()
+    elif st.session_state.current_section == 'D':
+        display_section_d()
+    elif st.session_state.current_section == 'Draft_Dashboard':
+        display_draft_dashboard()
+    elif st.session_state.current_section == 'Admin_Dashboard':
+        admin_dashboard()
+    elif st.session_state.current_section == 'Admin_Interviewers':
+        user_management_section()
+    elif st.session_state.current_section == 'Admin_Analytics':
+        analytics_main()
+    elif st.session_state.current_section == 'Admin_Settings':
+        database_tools_section()
+    else:
+        display_dashboard()
+
+def display_dashboard():
+    """Display main dashboard"""
+    st.title("🏠 Compliance Survey Dashboard")
+    
+    if st.session_state.interviewer_logged_in:
+        st.subheader("Welcome, Interviewer!")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Your Drafts", "5", "2 new")
+        
+        with col2:
+            st.metric("Completed Surveys", "12", "3 this week")
+        
+        with col3:
+            st.metric("Avg. Completion Time", "45 min", "-5 min")
+        
+        # Quick actions
+        st.markdown("---")
+        st.subheader("🚀 Quick Actions")
+        
+        action_col1, action_col2, action_col3 = st.columns(3)
+        
+        with action_col1:
+            if st.button("🆕 Start New Interview", use_container_width=True):
+                reset_interview()
+                st.session_state.current_section = 'A'
+                st.rerun()
+        
+        with action_col2:
+            if st.button("📋 Manage Drafts", use_container_width=True):
+                st.session_state.current_section = 'Draft_Dashboard'
+                st.rerun()
+        
+        with action_col3:
+            if st.button("📊 View Progress", use_container_width=True):
+                st.session_state.current_section = 'Admin_Analytics'
+                st.rerun()
+    
+    elif st.session_state.admin_logged_in:
+        st.subheader("Admin Overview")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Surveys", "156", "12 new")
+        
+        with col2:
+            st.metric("Active Interviewers", "6", "1 new")
+        
+        with col3:
+            st.metric("Completion Rate", "78%", "5%")
+        
+        with col4:
+            st.metric("Avg. Compliance Cost", "12.5%", "-2.3%")
+        
+        # Recent activity
+        st.markdown("---")
+        st.subheader("📈 Recent Activity")
+        
+        # Placeholder for recent activity chart
+        st.info("📊 Analytics dashboard will show recent survey activity and trends")
+
+# Admin Navigation Functions
+def admin_dashboard():
+    """Admin dashboard"""
+    st.title("🔧 Admin Dashboard")
+    st.subheader("Database Management & Analytics")
+    
+    st.header("📈 Database Statistics")
+    
+    stats = get_database_stats()
+    
+    if stats:
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Interviews", stats['total_interviews'])
+        with col2:
+            st.metric("Submitted", stats['submitted_interviews'])
+        with col3:
+            st.metric("Drafts", stats['draft_interviews'])
+        with col4:
+            if not stats['avg_metrics'].empty:
+                avg_risk = stats['avg_metrics'].iloc[0]['avg_risk']
+                st.metric("Avg Risk Score", f"{avg_risk:.1f}" if avg_risk else "N/A")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if not stats['sector_dist'].empty:
+                fig_sector = px.pie(stats['sector_dist'], values='count', names='primary_sector', 
+                                  title="Interviews by Sector")
+                st.plotly_chart(fig_sector, use_container_width=True)
+        
+        with col2:
+            if not stats['district_dist'].empty:
+                fig_district = px.bar(stats['district_dist'], x='district', y='count',
+                                    title="Interviews by District", color='district')
+                st.plotly_chart(fig_district, use_container_width=True)
+    
+    st.header("💾 Data Management")
+    
+    tab1, tab2, tab3 = st.tabs(["All Interviews", "Search & Filter", "Data Export"])
+    
+    with tab1:
+        display_all_interviews()
+    
+    with tab2:
+        search_and_filter_interviews()
+    
+    with tab3:
+        data_export_section()
+
+def search_and_filter_interviews():
+    """Search and filter interviews"""
+    st.subheader("🔍 Search & Filter Interviews")
+    
+    interviews_df = get_all_interviews()
+    
+    if not interviews_df.empty:
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            sector_filter = st.multiselect("Filter by Sector", interviews_df['primary_sector'].unique(),
+                                         key="sector_filter")
+        with col2:
+            district_filter = st.multiselect("Filter by District", interviews_df['district'].unique(),
+                                           key="district_filter")
+        with col3:
+            status_filter = st.multiselect("Filter by Status", interviews_df['status'].unique(),
+                                         key="status_filter")
+        
+        filtered_df = interviews_df.copy()
+        if sector_filter:
+            filtered_df = filtered_df[filtered_df['primary_sector'].isin(sector_filter)]
+        if district_filter:
+            filtered_df = filtered_df[filtered_df['district'].isin(district_filter)]
+        if status_filter:
+            filtered_df = filtered_df[filtered_df['status'].isin(status_filter)]
+        
+        st.write(f"**Filtered Results:** {len(filtered_df)} interviews")
+        st.dataframe(filtered_df, use_container_width=True)
+        
+        if not filtered_df.empty:
+            csv = filtered_df.to_csv(index=False)
+            st.download_button(
+                label="📥 Download Filtered Data (CSV)",
+                data=csv,
+                file_name=f"filtered_interviews_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                key="download_filtered_csv"
+            )
+    else:
+        st.info("No interviews available for filtering.")
+
+def data_export_section():
+    """Data export section"""
+    st.subheader("📤 Data Export")
+    
+    interviews_df = get_all_interviews()
+    
+    if not interviews_df.empty:
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            csv = interviews_df.to_csv(index=False)
+            st.download_button(
+                label="💾 Download Full Data (CSV)",
+                data=csv,
+                file_name=f"compliance_data_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key="download_full_csv"
+            )
+        
+        with col2:
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                interviews_df.to_excel(writer, sheet_name='Interviews', index=False)
+                
+                summary_data = {
+                    'Metric': ['Total Interviews', 'Submitted', 'Drafts', 'Average Risk Score'],
+                    'Value': [
+                        len(interviews_df),
+                        len(interviews_df[interviews_df['status'] == 'submitted']),
+                        len(interviews_df[interviews_df['status'] == 'draft']),
+                        interviews_df['risk_score'].mean() if 'risk_score' in interviews_df.columns else 0
+                    ]
+                }
+                pd.DataFrame(summary_data).to_excel(writer, sheet_name='Summary', index=False)
+            
+            excel_data = output.getvalue()
+            st.download_button(
+                label="📊 Download Full Data (Excel)",
+                data=excel_data,
+                file_name=f"compliance_data_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="download_full_excel"
+            )
+        
+        st.write("**JSON Export**")
+        json_data = interviews_df.to_json(orient='records', indent=2)
+        st.download_button(
+            label="🔤 Download Full Data (JSON)",
+            data=json_data,
+            file_name=f"compliance_data_{datetime.now().strftime('%Y%m%d')}.json",
+            mime="application/json",
+            use_container_width=True,
+            key="download_full_json"
+        )
+    else:
+        st.info("No data available for export.")
+
+def user_management_section():
+    """User management section"""
+    st.header("👥 User Management")
+    
+    tab1, tab2 = st.tabs(["User Statistics", "Session Logs"])
+    
+    with tab1:
+        st.subheader("User Statistics")
+        
+        try:
+            result = execute_query("""
+                SELECT created_by, 
+                       COUNT(*) as total_interviews,
+                       SUM(CASE WHEN status = 'submitted' THEN 1 ELSE 0 END) as submitted,
+                       SUM(CASE WHEN status = 'draft' THEN 1 ELSE 0 END) as drafts
+                FROM responses 
+                GROUP BY created_by
+                ORDER BY total_interviews DESC
+            """, return_result=True)
+            
+            if result and isinstance(result, tuple) and result[0]:
+                result_data, columns = result
+                user_stats = pd.DataFrame(result_data, columns=columns)
+                
+                if not user_stats.empty:
+                    st.dataframe(user_stats, use_container_width=True)
+                    
+                    fig = px.bar(user_stats, x='created_by', y='total_interviews', 
+                               title="Interviews by User", color='created_by')
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No user statistics available yet.")
+            else:
+                st.info("No user statistics available yet.")
+        except Exception as e:
+            st.error(f"Error loading user statistics: {str(e)}")
+    
+    with tab2:
+        st.subheader("User Session Logs")
+        display_user_sessions()
+
+def display_user_sessions():
+    """Display user session logs"""
+    try:
+        result = execute_query("SELECT * FROM user_sessions ORDER BY login_time DESC LIMIT 100", return_result=True)
+        if result and isinstance(result, tuple) and result[0]:
+            result_data, columns = result
+            sessions_df = pd.DataFrame(result_data, columns=columns)
+            st.dataframe(sessions_df, use_container_width=True)
+        else:
+            st.info("No session logs found.")
+    except Exception as e:
+        st.error(f"Error loading session logs: {str(e)}")
+
+def database_tools_section():
+    """Database tools and maintenance"""
+    st.subheader("🛠️ Database Tools")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("🔄 Refresh Database Cache", use_container_width=True, key="refresh_cache_btn"):
+            st.success("Database cache refreshed!")
+            log_admin_action(st.session_state.current_user, "refresh_cache")
+        
+        if st.button("📊 Update Statistics", use_container_width=True, key="update_stats_btn"):
+            st.rerun()
+    
+    with col2:
+        if st.button("🗑️ Clear All Drafts", use_container_width=True, key="clear_drafts_btn"):
+            if st.checkbox("I understand this will delete all draft interviews", key="confirm_clear_drafts"):
+                if st.button("Confirm Delete All Drafts", use_container_width=True, key="confirm_delete_drafts_btn"):
+                    try:
+                        result = execute_query("DELETE FROM responses WHERE status = 'draft'")
+                        if result:
+                            st.success("All draft interviews deleted!")
+                            log_admin_action(st.session_state.current_user, "clear_drafts")
+                            st.rerun()
+                        else:
+                            st.error("Failed to delete drafts")
+                    except Exception as e:
+                        st.error(f"Error deleting drafts: {str(e)}")
+        
+        if st.button("📝 View Admin Logs", use_container_width=True, key="view_logs_btn"):
+            display_admin_logs()
+
+def display_admin_logs():
+    """Display admin action logs"""
+    try:
+        result = execute_query("SELECT * FROM admin_logs ORDER BY timestamp DESC LIMIT 100", return_result=True)
+        if result and isinstance(result, tuple) and result[0]:
+            result_data, columns = result
+            logs_df = pd.DataFrame(result_data, columns=columns)
+            st.subheader("📝 Admin Action Logs")
+            st.dataframe(logs_df, use_container_width=True)
+        else:
+            st.info("No admin logs found.")
+    except Exception as e:
+        st.error(f"Error loading admin logs: {str(e)}")
+
+def display_interview_details(interview_id):
+    """Display detailed interview information"""
+    details_df = get_interview_details(interview_id)
+    
+    if not details_df.empty:
+        interview = details_df.iloc[0]
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**Business Information**")
+            st.write(f"**Name:** {interview['business_name']}")
+            st.write(f"**District:** {interview['district']}")
+            st.write(f"**Sector:** {interview['primary_sector']}")
+            st.write(f"**Size:** {interview['business_size']}")
+            st.write(f"**Legal Status:** {interview['legal_status']}")
+        
+        with col2:
+            st.write("**Compliance Metrics**")
+            st.write(f"**Total Cost:** ZMW {interview['total_compliance_cost']:,.0f}")
+            st.write(f"**Total Time:** {interview['total_compliance_time']} days")
+            st.write(f"**Risk Score:** {interview['risk_score']:.1f}/10")
+            st.write(f"**Status:** {interview['status']}")
+        
+        if interview['procedure_data']:
+            st.write("**Procedures**")
+            procedures = json.loads(interview['procedure_data'])
+            for i, proc in enumerate(procedures, 1):
+                with st.expander(f"{i}. {proc['procedure']}"):
+                    st.write(f"**Authority:** {proc['authority']}")
+                    st.write(f"**Application Mode:** {proc.get('application_mode', 'Not specified')}")
+                    st.write(f"**Cost:** ZMW {proc['official_fees']:,.0f}")
+                    st.write(f"**Time:** {proc['total_days']} days")
+                    st.write(f"**Complexity:** {proc['complexity']}/5")
+        
+        if interview['reform_priorities']:
+            st.write("**Reform Priorities**")
+            reforms = json.loads(interview['reform_priorities'])
+            for i, reform in enumerate(reforms, 1):
+                st.write(f"{i}. {reform}")
+
+# Run the application
 if __name__ == "__main__":
     main()
