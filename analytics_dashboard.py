@@ -24,7 +24,6 @@ class ComplianceAnalytics:
             """
             df = pd.read_sql(query, self.conn)
             
-            # Parse procedures data
             procedures_data = []
             for _, row in df.iterrows():
                 if row['procedures_json'] and row['procedures_json'] != 'null' and row['procedures_json'] != '[]':
@@ -54,7 +53,6 @@ class ComplianceAnalytics:
         
         matrix_data = []
         
-        # Group by procedure type and calculate metrics
         procedure_groups = procedures_df.groupby('procedure')
         
         for procedure, group in procedure_groups:
@@ -106,7 +104,6 @@ def display_overview_metrics(df, procedures_df):
     """Display overview metrics and visualizations"""
     st.header("📈 Compliance Overview")
     
-    # Key metrics
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
@@ -126,7 +123,6 @@ def display_overview_metrics(df, procedures_df):
         st.metric("Average Risk Score", f"{avg_risk:.1f}/10")
     
     if not df.empty:
-        # Cost distribution
         col1, col2 = st.columns(2)
         
         with col1:
@@ -143,7 +139,6 @@ def display_overview_metrics(df, procedures_df):
             fig_time.update_layout(showlegend=False)
             st.plotly_chart(fig_time, use_container_width=True)
         
-        # Top procedures by cost
         if not procedures_df.empty:
             st.subheader("🏆 Most Expensive Procedures")
             
@@ -166,11 +161,9 @@ def display_cost_matrix(analytics, procedures_df):
         st.info("No procedure data available for matrix analysis.")
         return
     
-    # Interactive matrix visualization
     col1, col2 = st.columns(2)
     
     with col1:
-        # Cost vs Time scatter plot
         fig_scatter = px.scatter(matrix_df, 
                                x='Avg_Time_Days', 
                                y='Avg_Total_Cost',
@@ -187,7 +180,6 @@ def display_cost_matrix(analytics, procedures_df):
         st.plotly_chart(fig_scatter, use_container_width=True)
     
     with col2:
-        # Cost breakdown by procedure
         top_10 = matrix_df.head(10)
         fig_bar = px.bar(top_10,
                         x='Procedure',
@@ -197,7 +189,6 @@ def display_cost_matrix(analytics, procedures_df):
         fig_bar.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig_bar, use_container_width=True)
     
-    # Detailed matrix table
     st.subheader("📊 Detailed Compliance Matrix")
     
     display_matrix = matrix_df[['Procedure', 'Authority', 'Avg_Total_Cost', 'Avg_Time_Days', 
@@ -211,7 +202,6 @@ def display_cost_matrix(analytics, procedures_df):
     
     st.dataframe(display_matrix, use_container_width=True)
     
-    # Download matrix
     csv = matrix_df.to_csv(index=False)
     st.download_button(
         label="📥 Download Cost Matrix (CSV)",
@@ -230,7 +220,6 @@ def display_sector_analysis(analytics, df, procedures_df):
         st.info("No sector data available for analysis.")
         return
     
-    # Sector comparison
     col1, col2 = st.columns(2)
     
     with col1:
@@ -249,7 +238,6 @@ def display_sector_analysis(analytics, df, procedures_df):
                                 labels={'Avg_Total_Time': 'Average Time (Days)'})
         st.plotly_chart(fig_sector_time, use_container_width=True)
     
-    # Risk and efficiency analysis
     col1, col2 = st.columns(2)
     
     with col1:
@@ -274,7 +262,6 @@ def display_sector_analysis(analytics, df, procedures_df):
                               labels={'Procedures_Per_Business': 'Procedures per Business'})
         st.plotly_chart(fig_efficiency, use_container_width=True)
     
-    # Sector details table
     st.subheader("📈 Sector Performance Metrics")
     
     display_sector = sector_df[['Sector', 'Business_Count', 'Avg_Total_Cost', 'Avg_Total_Time',
@@ -297,11 +284,9 @@ def display_time_analysis(procedures_df):
         st.info("No procedure data available for time analysis.")
         return
     
-    # Time distribution analysis
     col1, col2 = st.columns(2)
     
     with col1:
-        # Preparation vs Waiting time
         fig_time_breakdown = go.Figure()
         fig_time_breakdown.add_trace(go.Box(y=procedures_df['prep_days'], name='Preparation Time'))
         fig_time_breakdown.add_trace(go.Box(y=procedures_df['wait_days'], name='Waiting Time'))
@@ -309,7 +294,6 @@ def display_time_analysis(procedures_df):
         st.plotly_chart(fig_time_breakdown, use_container_width=True)
     
     with col2:
-        # Time by application mode
         time_by_mode = procedures_df.groupby('application_mode').agg({
             'total_days': 'mean',
             'prep_days': 'mean',
@@ -323,10 +307,8 @@ def display_time_analysis(procedures_df):
                               labels={'value': 'Days', 'variable': 'Time Type'})
         st.plotly_chart(fig_mode_time, use_container_width=True)
     
-    # Time trends
     st.subheader("📅 Time Efficiency Analysis")
     
-    # Most time-consuming procedures
     time_consuming = procedures_df.groupby('procedure').agg({
         'total_days': ['mean', 'std', 'count']
     }).round(1)
@@ -350,7 +332,6 @@ def display_procedure_details(procedures_df):
         st.info("No procedure data available for detailed analysis.")
         return
     
-    # Procedure selector
     procedures = procedures_df['procedure'].unique()
     selected_procedure = st.selectbox("Select Procedure for Detailed Analysis", procedures)
     
@@ -375,7 +356,6 @@ def display_procedure_details(procedures_df):
             frequency = len(proc_data)
             st.metric("Frequency", frequency)
         
-        # Cost distribution for selected procedure
         col1, col2 = st.columns(2)
         
         with col1:
@@ -390,7 +370,6 @@ def display_procedure_details(procedures_df):
                                  labels={'total_days': 'Total Days'})
             st.plotly_chart(fig_time_dist, use_container_width=True)
         
-        # Authority analysis
         st.subheader("🏛️ Regulatory Authority Analysis")
         authority_stats = proc_data.groupby('authority').agg({
             'official_fees': ['mean', 'std', 'count'],
@@ -404,13 +383,11 @@ def display_procedure_details(procedures_df):
 def generate_powerbi_dataset(df, procedures_df):
     """Generate optimized dataset for Power BI"""
     
-    # Create business-level dataset
     business_data = df[['interview_id', 'business_name', 'district', 'primary_sector', 
                        'business_size', 'legal_status', 'total_compliance_cost', 
                        'total_compliance_time', 'risk_score', 'employees_fulltime',
                        'employees_parttime', 'year_established']].copy()
     
-    # Create procedures dataset
     if not procedures_df.empty:
         procedures_data = procedures_df[['interview_id', 'procedure', 'authority', 
                                        'official_fees', 'unofficial_payments', 'total_days',
@@ -418,7 +395,6 @@ def generate_powerbi_dataset(df, procedures_df):
     else:
         procedures_data = pd.DataFrame()
     
-    # Merge for denormalized Power BI model
     if not procedures_data.empty and not business_data.empty:
         powerbi_data = pd.merge(business_data, procedures_data, on='interview_id', how='left')
     else:
@@ -426,12 +402,10 @@ def generate_powerbi_dataset(df, procedures_df):
     
     return powerbi_data
 
-
 def display_data_export(analytics, df, procedures_df):
     """Display data export options"""
     st.header("🔗 Data Export & Integration")
     
-    # Power BI Integration
     st.subheader("📊 Power BI Integration")
     
     st.info("""
@@ -439,13 +413,11 @@ def display_data_export(analytics, df, procedures_df):
     Recommended connection method: Import CSV files directly into Power BI.
     """)
     
-    # Generate comprehensive dataset for Power BI
     powerbi_data = generate_powerbi_dataset(df, procedures_df)
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        # Main dataset export
         csv_main = df.to_csv(index=False)
         st.download_button(
             label="💾 Download Main Dataset (CSV)",
@@ -456,7 +428,6 @@ def display_data_export(analytics, df, procedures_df):
         )
     
     with col2:
-        # Procedures dataset export
         if not procedures_df.empty:
             csv_procedures = procedures_df.to_csv(index=False)
             st.download_button(
@@ -468,7 +439,6 @@ def display_data_export(analytics, df, procedures_df):
             )
     
     with col3:
-        # Power BI optimized dataset
         csv_powerbi = powerbi_data.to_csv(index=False)
         st.download_button(
             label="🚀 Download Power BI Dataset (CSV)",
@@ -478,7 +448,6 @@ def display_data_export(analytics, df, procedures_df):
             use_container_width=True
         )
     
-    # Image exports - WITH ERROR HANDLING
     st.subheader("🖼️ Chart Exports")
     
     if not df.empty:
@@ -486,7 +455,6 @@ def display_data_export(analytics, df, procedures_df):
         
         with col1:
             try:
-                # Cost distribution chart
                 fig_cost = px.histogram(df, x='total_compliance_cost',
                                       title="Compliance Cost Distribution")
                 img_cost = fig_cost.to_image(format="png")
@@ -499,12 +467,10 @@ def display_data_export(analytics, df, procedures_df):
                 )
             except Exception as e:
                 st.warning("📊 Chart export requires Kaleido. Install with: `pip install -U kaleido`")
-                st.info("Chart preview:")
                 st.plotly_chart(fig_cost, use_container_width=True)
         
         with col2:
             try:
-                # Time distribution chart
                 fig_time = px.histogram(df, x='total_compliance_time',
                                       title="Compliance Time Distribution")
                 img_time = fig_time.to_image(format="png")
@@ -517,7 +483,6 @@ def display_data_export(analytics, df, procedures_df):
                 )
             except Exception as e:
                 st.warning("📊 Chart export requires Kaleido. Install with: `pip install -U kaleido`")
-                st.info("Chart preview:")
                 st.plotly_chart(fig_time, use_container_width=True)          
 
 def create_custom_query_tool():
@@ -541,7 +506,6 @@ def create_custom_query_tool():
             st.subheader("Query Results")
             st.dataframe(result_df, use_container_width=True)
             
-            # Export results
             csv = result_df.to_csv(index=False)
             st.download_button(
                 label="📥 Download Query Results",
@@ -557,7 +521,6 @@ def create_interactive_dashboard():
     """Main interactive dashboard function"""
     st.title("📊 Compliance Analytics Dashboard")
     
-    # Initialize analytics
     analytics = ComplianceAnalytics()
     df, procedures_df = analytics.get_analytics_data()
     
@@ -565,22 +528,17 @@ def create_interactive_dashboard():
         st.warning("No submitted interviews available for analysis.")
         return
     
-    # Sidebar filters
     st.sidebar.header("🔍 Filters")
     
-    # Sector filter
     sectors = ['All'] + list(df['primary_sector'].unique())
     selected_sector = st.sidebar.selectbox("Sector", sectors)
     
-    # District filter
     districts = ['All'] + list(df['district'].unique())
     selected_district = st.sidebar.selectbox("District", districts)
     
-    # Business size filter
     sizes = ['All'] + list(df['business_size'].unique())
     selected_size = st.sidebar.selectbox("Business Size", sizes)
     
-    # Apply filters
     filtered_df = df.copy()
     filtered_procedures = procedures_df.copy()
     
@@ -599,7 +557,6 @@ def create_interactive_dashboard():
         if not filtered_procedures.empty:
             filtered_procedures = filtered_procedures[filtered_procedures['business_size'] == selected_size]
     
-    # Dashboard tabs
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "📈 Overview", "💰 Cost Matrix", "🏢 Sector Analysis", "⏱️ Time Analysis", 
         "📋 Procedure Details", "🔗 Data Export"
@@ -623,10 +580,8 @@ def create_interactive_dashboard():
     with tab6:
         display_data_export(analytics, filtered_df, filtered_procedures)
 
-# Main analytics function for integration
 def analytics_main():
     """Main analytics application - integrated version"""
-    # Navigation within analytics
     st.sidebar.header("📊 Analytics Navigation")
     
     analytics_option = st.sidebar.radio(
@@ -656,3 +611,6 @@ def analytics_main():
         **Data Sources**: compliance_survey.db database
         **Export Formats**: CSV, PNG images, Power BI optimized datasets
         """)
+
+if __name__ == "__main__":
+    analytics_main()
