@@ -1,20 +1,64 @@
 # interview_editor.py
 import streamlit as st
 import pandas as pd
-import sqlite3
-import json
 from datetime import datetime
+import json
+import sqlitecloud
+
+# SQLite Cloud configuration
+SQLITECLOUD_CONFIG = {
+    "connection_string": "sqlitecloud://ctoxm6jkvz.g4.sqlite.cloud:8860/compliance_survey.db?apikey=UoEbilyXxrbfqDUjsrbiLxUZQkRMtyK9fbhIzKVFuAw"
+}
+
+def get_connection():
+    """Get SQLite Cloud database connection"""
+    try:
+        conn = sqlitecloud.connect(SQLITECLOUD_CONFIG["connection_string"])
+        return conn
+    except Exception as e:
+        st.error(f"❌ Database connection error: {str(e)}")
+        return None
+
+def execute_query(query, params=None, return_result=False):
+    """Execute a query on SQLite Cloud"""
+    conn = get_connection()
+    if conn is None:
+        return None
+    
+    try:
+        cursor = conn.cursor()
+        if params:
+            cursor.execute(query, params)
+        else:
+            cursor.execute(query)
+        
+        if return_result:
+            if query.strip().upper().startswith('SELECT'):
+                result = cursor.fetchall()
+                columns = [desc[0] for desc in cursor.description] if cursor.description else []
+                return (result, columns)
+            else:
+                conn.commit()
+                return cursor.rowcount
+        else:
+            conn.commit()
+            return True
+            
+    except Exception as e:
+        st.error(f"❌ Query execution error: {str(e)}")
+        return None
+    finally:
+        conn.close()
 
 class InterviewEditor:
     def __init__(self):
-        self.conn = sqlite3.connect('compliance_survey.db', check_same_thread=False)
+        pass
     
     def ensure_table_exists(self):
         """Ensure the responses table exists"""
         try:
-            cursor = self.conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='responses'")
-            if not cursor.fetchone():
+            result = execute_query("SELECT name FROM sqlite_master WHERE type='table' AND name='responses'", return_result=True)
+            if not result or not result[0] or len(result[0]) == 0:
                 st.error("❌ Database table 'responses' does not exist. Please initialize the database first.")
                 return False
             return True
@@ -37,8 +81,12 @@ class InterviewEditor:
             WHERE status = 'submitted'
             ORDER BY submission_date DESC
             """
-            df = pd.read_sql(query, self.conn)
-            return df
+            result = execute_query(query, return_result=True)
+            if result and isinstance(result, tuple) and result[0]:
+                result_data, columns = result
+                df = pd.DataFrame(result_data, columns=columns)
+                return df
+            return pd.DataFrame()
         except Exception as e:
             st.error(f"Error loading interviews: {str(e)}")
             return pd.DataFrame()
@@ -50,9 +98,12 @@ class InterviewEditor:
                 return None
                 
             query = "SELECT * FROM responses WHERE interview_id = ?"
-            df = pd.read_sql(query, self.conn, params=(interview_id,))
-            if not df.empty:
-                return df.iloc[0].to_dict()
+            result = execute_query(query, (interview_id,), return_result=True)
+            if result and isinstance(result, tuple) and result[0]:
+                result_data, columns = result
+                df = pd.DataFrame(result_data, columns=columns)
+                if not df.empty:
+                    return df.iloc[0].to_dict()
             return None
         except Exception as e:
             st.error(f"Error loading interview details: {str(e)}")
@@ -64,19 +115,17 @@ class InterviewEditor:
             if not self.ensure_table_exists():
                 return False
                 
-            cursor = self.conn.cursor()
-            
             set_clause = ", ".join([f"{key} = ?" for key in updates.keys()])
             values = list(updates.values()) + [datetime.now().isoformat(), interview_id]
             
             query = f"UPDATE responses SET {set_clause}, last_modified = ? WHERE interview_id = ?"
             
-            cursor.execute(query, values)
-            self.conn.commit()
+            result = execute_query(query, values)
             
-            self.log_edit_action(st.session_state.current_user, interview_id, updates)
+            if result:
+                self.log_edit_action(st.session_state.current_user, interview_id, updates)
             
-            return True
+            return result is not None
         except Exception as e:
             st.error(f"Error updating interview: {str(e)}")
             return False
@@ -84,8 +133,8 @@ class InterviewEditor:
     def log_edit_action(self, username, interview_id, changes):
         """Log edit actions for audit trail"""
         try:
-            cursor = self.conn.cursor()
-            cursor.execute('''
+            # Ensure edit_logs table exists
+            execute_query('''
                 CREATE TABLE IF NOT EXISTS edit_logs (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     username TEXT,
@@ -96,14 +145,15 @@ class InterviewEditor:
                 )
             ''')
             
-            cursor.execute('''
+            result = execute_query('''
                 INSERT INTO edit_logs (username, interview_id, action, changes, timestamp)
                 VALUES (?, ?, ?, ?, ?)
             ''', (username, interview_id, 'edit', json.dumps(changes), datetime.now().isoformat()))
             
-            self.conn.commit()
+            return result is not None
         except Exception as e:
             st.error(f"Error logging edit action: {str(e)}")
+            return False
     
     def revert_to_draft(self, interview_id):
         """Revert a submitted interview back to draft status"""
@@ -111,18 +161,16 @@ class InterviewEditor:
             if not self.ensure_table_exists():
                 return False
                 
-            cursor = self.conn.cursor()
-            cursor.execute('''
+            result = execute_query('''
                 UPDATE responses 
                 SET status = 'draft', last_modified = ?
                 WHERE interview_id = ?
             ''', (datetime.now().isoformat(), interview_id))
             
-            self.conn.commit()
+            if result:
+                self.log_edit_action(st.session_state.current_user, interview_id, {'status': 'reverted_to_draft'})
             
-            self.log_edit_action(st.session_state.current_user, interview_id, {'status': 'reverted_to_draft'})
-            
-            return True
+            return result is not None
         except Exception as e:
             st.error(f"Error reverting to draft: {str(e)}")
             return False
@@ -208,28 +256,29 @@ def display_interview_editor(editor, interview_id):
 def display_edit_history(editor, interview_id):
     """Display edit history for an interview"""
     try:
-        cursor = editor.conn.cursor()
-        cursor.execute('''
+        result = execute_query('''
             SELECT username, action, changes, timestamp 
             FROM edit_logs 
             WHERE interview_id = ? 
             ORDER BY timestamp DESC
             LIMIT 5
-        ''', (interview_id,))
+        ''', (interview_id,), return_result=True)
         
-        history = cursor.fetchall()
-        
-        if history:
-            with st.expander("📋 Edit History (Last 5 actions)"):
-                for record in history:
-                    st.write(f"**{record[0]}** - {record[1]} - {record[3]}")
-                    if record[2] and record[2] != 'null':
-                        try:
-                            changes = json.loads(record[2])
-                            for key, value in changes.items():
-                                st.write(f"  - {key}: {value}")
-                        except:
-                            st.write(f"  - Changes: {record[2]}")
+        if result and isinstance(result, tuple) and result[0]:
+            history_data, columns = result
+            history_df = pd.DataFrame(history_data, columns=columns)
+            
+            if not history_df.empty:
+                with st.expander("📋 Edit History (Last 5 actions)"):
+                    for _, record in history_df.iterrows():
+                        st.write(f"**{record['username']}** - {record['action']} - {record['timestamp']}")
+                        if record['changes'] and record['changes'] != 'null':
+                            try:
+                                changes = json.loads(record['changes'])
+                                for key, value in changes.items():
+                                    st.write(f"  - {key}: {value}")
+                            except:
+                                st.write(f"  - Changes: {record['changes']}")
     except:
         pass
 
@@ -595,14 +644,14 @@ def export_interview_data(interview_data):
 def delete_interview(editor, interview_id):
     """Delete an interview (admin only)"""
     try:
-        cursor = editor.conn.cursor()
-        cursor.execute("DELETE FROM responses WHERE interview_id = ?", (interview_id,))
-        editor.conn.commit()
+        result = execute_query("DELETE FROM responses WHERE interview_id = ?", (interview_id,))
         
-        editor.log_edit_action(st.session_state.current_user, interview_id, {'action': 'permanent_deletion'})
-        
-        st.success("✅ Interview deleted successfully!")
-        st.rerun()
+        if result:
+            editor.log_edit_action(st.session_state.current_user, interview_id, {'action': 'permanent_deletion'})
+            st.success("✅ Interview deleted successfully!")
+            st.rerun()
+        else:
+            st.error("Failed to delete interview")
     except Exception as e:
         st.error(f"Error deleting interview: {str(e)}")
 
