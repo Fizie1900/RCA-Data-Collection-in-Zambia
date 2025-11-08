@@ -1,20 +1,64 @@
 # draft_manager.py
 import streamlit as st
 import pandas as pd
-import sqlite3
 from datetime import datetime
 import json
+import sqlitecloud
+
+# SQLite Cloud configuration
+SQLITECLOUD_CONFIG = {
+    "connection_string": "sqlitecloud://ctoxm6jkvz.g4.sqlite.cloud:8860/compliance_survey.db?apikey=UoEbilyXxrbfqDUjsrbiLxUZQkRMtyK9fbhIzKVFuAw"
+}
+
+def get_connection():
+    """Get SQLite Cloud database connection"""
+    try:
+        conn = sqlitecloud.connect(SQLITECLOUD_CONFIG["connection_string"])
+        return conn
+    except Exception as e:
+        st.error(f"❌ Database connection error: {str(e)}")
+        return None
+
+def execute_query(query, params=None, return_result=False):
+    """Execute a query on SQLite Cloud"""
+    conn = get_connection()
+    if conn is None:
+        return None
+    
+    try:
+        cursor = conn.cursor()
+        if params:
+            cursor.execute(query, params)
+        else:
+            cursor.execute(query)
+        
+        if return_result:
+            if query.strip().upper().startswith('SELECT'):
+                result = cursor.fetchall()
+                columns = [desc[0] for desc in cursor.description] if cursor.description else []
+                return (result, columns)
+            else:
+                conn.commit()
+                return cursor.rowcount
+        else:
+            conn.commit()
+            return True
+            
+    except Exception as e:
+        st.error(f"❌ Query execution error: {str(e)}")
+        return None
+    finally:
+        conn.close()
 
 class DraftManager:
     def __init__(self):
-        self.conn = sqlite3.connect('compliance_survey.db', check_same_thread=False)
+        pass
     
     def ensure_table_exists(self):
         """Ensure the responses table exists"""
         try:
-            cursor = self.conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='responses'")
-            if not cursor.fetchone():
+            result = execute_query("SELECT name FROM sqlite_master WHERE type='table' AND name='responses'", return_result=True)
+            if not result or not result[0] or len(result[0]) == 0:
                 st.error("❌ Database table 'responses' does not exist. Please initialize the database first.")
                 return False
             return True
@@ -37,8 +81,12 @@ class DraftManager:
             WHERE status = 'draft' AND created_by = ?
             ORDER BY last_modified DESC
             """
-            df = pd.read_sql(query, self.conn, params=(username,))
-            return df
+            result = execute_query(query, (username,), return_result=True)
+            if result and isinstance(result, tuple) and result[0]:
+                result_data, columns = result
+                df = pd.DataFrame(result_data, columns=columns)
+                return df
+            return pd.DataFrame()
         except Exception as e:
             st.error(f"Error loading drafts: {str(e)}")
             return pd.DataFrame()
@@ -58,8 +106,12 @@ class DraftManager:
             WHERE status = 'draft'
             ORDER BY last_modified DESC
             """
-            df = pd.read_sql(query, self.conn)
-            return df
+            result = execute_query(query, return_result=True)
+            if result and isinstance(result, tuple) and result[0]:
+                result_data, columns = result
+                df = pd.DataFrame(result_data, columns=columns)
+                return df
+            return pd.DataFrame()
         except Exception as e:
             st.error(f"Error loading drafts: {str(e)}")
             return pd.DataFrame()
@@ -71,9 +123,12 @@ class DraftManager:
                 return None
                 
             query = "SELECT * FROM responses WHERE interview_id = ?"
-            df = pd.read_sql(query, self.conn, params=(interview_id,))
-            if not df.empty:
-                return df.iloc[0].to_dict()
+            result = execute_query(query, (interview_id,), return_result=True)
+            if result and isinstance(result, tuple) and result[0]:
+                result_data, columns = result
+                df = pd.DataFrame(result_data, columns=columns)
+                if not df.empty:
+                    return df.iloc[0].to_dict()
             return None
         except Exception as e:
             st.error(f"Error loading draft: {str(e)}")
@@ -85,14 +140,13 @@ class DraftManager:
             if not self.ensure_table_exists():
                 return False
                 
-            cursor = self.conn.cursor()
-            cursor.execute('''
+            result = execute_query('''
                 UPDATE responses 
                 SET current_section = ?, draft_progress = ?, last_modified = ?
                 WHERE interview_id = ?
             ''', (current_section, progress_percentage, datetime.now().isoformat(), interview_id))
-            self.conn.commit()
-            return True
+            
+            return result is not None
         except Exception as e:
             st.error(f"Error updating draft progress: {str(e)}")
             return False
@@ -103,10 +157,8 @@ class DraftManager:
             if not self.ensure_table_exists():
                 return False
                 
-            cursor = self.conn.cursor()
-            cursor.execute("DELETE FROM responses WHERE interview_id = ? AND status = 'draft'", (interview_id,))
-            self.conn.commit()
-            return True
+            result = execute_query("DELETE FROM responses WHERE interview_id = ? AND status = 'draft'", (interview_id,))
+            return result is not None
         except Exception as e:
             st.error(f"Error deleting draft: {str(e)}")
             return False
