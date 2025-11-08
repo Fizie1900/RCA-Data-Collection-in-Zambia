@@ -6,18 +6,62 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime
 import json
-import sqlite3
+import sqlitecloud
+
+# SQLite Cloud configuration
+SQLITECLOUD_CONFIG = {
+    "connection_string": "sqlitecloud://ctoxm6jkvz.g4.sqlite.cloud:8860/compliance_survey.db?apikey=UoEbilyXxrbfqDUjsrbiLxUZQkRMtyK9fbhIzKVFuAw"
+}
+
+def get_connection():
+    """Get SQLite Cloud database connection"""
+    try:
+        conn = sqlitecloud.connect(SQLITECLOUD_CONFIG["connection_string"])
+        return conn
+    except Exception as e:
+        st.error(f"❌ Database connection error: {str(e)}")
+        return None
+
+def execute_query(query, params=None, return_result=False):
+    """Execute a query on SQLite Cloud"""
+    conn = get_connection()
+    if conn is None:
+        return None
+    
+    try:
+        cursor = conn.cursor()
+        if params:
+            cursor.execute(query, params)
+        else:
+            cursor.execute(query)
+        
+        if return_result:
+            if query.strip().upper().startswith('SELECT'):
+                result = cursor.fetchall()
+                columns = [desc[0] for desc in cursor.description] if cursor.description else []
+                return (result, columns)
+            else:
+                conn.commit()
+                return cursor.rowcount
+        else:
+            conn.commit()
+            return True
+            
+    except Exception as e:
+        st.error(f"❌ Query execution error: {str(e)}")
+        return None
+    finally:
+        conn.close()
 
 class ComplianceAnalytics:
     def __init__(self):
-        self.conn = sqlite3.connect('compliance_survey.db', check_same_thread=False)
+        pass
     
     def ensure_table_exists(self):
         """Ensure the responses table exists"""
         try:
-            cursor = self.conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='responses'")
-            if not cursor.fetchone():
+            result = execute_query("SELECT name FROM sqlite_master WHERE type='table' AND name='responses'", return_result=True)
+            if not result or not result[0] or len(result[0]) == 0:
                 st.error("❌ Database table 'responses' does not exist. Please initialize the database first.")
                 return False
             return True
@@ -38,7 +82,13 @@ class ComplianceAnalytics:
             FROM responses r
             WHERE r.status = 'submitted'
             """
-            df = pd.read_sql(query, self.conn)
+            result = execute_query(query, return_result=True)
+            
+            if not result or not result[0]:
+                return pd.DataFrame(), pd.DataFrame()
+                
+            result_data, columns = result
+            df = pd.DataFrame(result_data, columns=columns)
             
             procedures_data = []
             for _, row in df.iterrows():
@@ -515,20 +565,23 @@ def create_custom_query_tool():
     
     if st.button("Execute Query", use_container_width=True):
         try:
-            conn = sqlite3.connect('compliance_survey.db', check_same_thread=False)
-            result_df = pd.read_sql(query, conn)
-            conn.close()
-            
-            st.subheader("Query Results")
-            st.dataframe(result_df, use_container_width=True)
-            
-            csv = result_df.to_csv(index=False)
-            st.download_button(
-                label="📥 Download Query Results",
-                data=csv,
-                file_name=f"query_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                mime="text/csv"
-            )
+            result = execute_query(query, return_result=True)
+            if result and isinstance(result, tuple) and result[0]:
+                result_data, columns = result
+                result_df = pd.DataFrame(result_data, columns=columns)
+                
+                st.subheader("Query Results")
+                st.dataframe(result_df, use_container_width=True)
+                
+                csv = result_df.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download Query Results",
+                    data=csv,
+                    file_name=f"query_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.info("No results returned from query.")
             
         except Exception as e:
             st.error(f"Query error: {str(e)}")
@@ -624,7 +677,7 @@ def analytics_main():
         - 📋 **Procedure Details**: Deep dive into specific procedures
         - 🔗 **Data Export**: Power BI integration and data exports
         
-        **Data Sources**: compliance_survey.db database
+        **Data Sources**: SQLite Cloud database
         **Export Formats**: CSV, PNG images, Power BI optimized datasets
         """)
 
