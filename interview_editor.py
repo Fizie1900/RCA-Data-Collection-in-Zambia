@@ -9,9 +9,25 @@ class InterviewEditor:
     def __init__(self):
         self.conn = sqlite3.connect('compliance_survey.db', check_same_thread=False)
     
+    def ensure_table_exists(self):
+        """Ensure the responses table exists"""
+        try:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='responses'")
+            if not cursor.fetchone():
+                st.error("❌ Database table 'responses' does not exist. Please initialize the database first.")
+                return False
+            return True
+        except Exception as e:
+            st.error(f"Error checking table existence: {str(e)}")
+            return False
+    
     def get_submitted_interviews(self):
         """Get all submitted interviews for editing"""
         try:
+            if not self.ensure_table_exists():
+                return pd.DataFrame()
+                
             query = """
             SELECT 
                 interview_id, business_name, district, primary_sector, 
@@ -30,6 +46,9 @@ class InterviewEditor:
     def get_interview_details(self, interview_id):
         """Get complete interview details"""
         try:
+            if not self.ensure_table_exists():
+                return None
+                
             query = "SELECT * FROM responses WHERE interview_id = ?"
             df = pd.read_sql(query, self.conn, params=(interview_id,))
             if not df.empty:
@@ -42,6 +61,9 @@ class InterviewEditor:
     def update_interview(self, interview_id, updates):
         """Update interview data"""
         try:
+            if not self.ensure_table_exists():
+                return False
+                
             cursor = self.conn.cursor()
             
             set_clause = ", ".join([f"{key} = ?" for key in updates.keys()])
@@ -86,6 +108,9 @@ class InterviewEditor:
     def revert_to_draft(self, interview_id):
         """Revert a submitted interview back to draft status"""
         try:
+            if not self.ensure_table_exists():
+                return False
+                
             cursor = self.conn.cursor()
             cursor.execute('''
                 UPDATE responses 
