@@ -4,7 +4,6 @@ import pandas as pd
 import sqlite3
 import json
 from datetime import datetime
-from analytics_dashboard import ComplianceAnalytics
 
 class InterviewEditor:
     def __init__(self):
@@ -45,18 +44,14 @@ class InterviewEditor:
         try:
             cursor = self.conn.cursor()
             
-            # Prepare update query
             set_clause = ", ".join([f"{key} = ?" for key in updates.keys()])
-            values = list(updates.values())
-            values.append(interview_id)
+            values = list(updates.values()) + [datetime.now().isoformat(), interview_id]
             
             query = f"UPDATE responses SET {set_clause}, last_modified = ? WHERE interview_id = ?"
-            values = list(updates.values()) + [datetime.now().isoformat(), interview_id]
             
             cursor.execute(query, values)
             self.conn.commit()
             
-            # Log the edit
             self.log_edit_action(st.session_state.current_user, interview_id, updates)
             
             return True
@@ -100,7 +95,6 @@ class InterviewEditor:
             
             self.conn.commit()
             
-            # Log the revert action
             self.log_edit_action(st.session_state.current_user, interview_id, {'status': 'reverted_to_draft'})
             
             return True
@@ -112,17 +106,14 @@ def display_interview_selector(editor):
     """Display interface to select interviews for editing"""
     st.header("📝 Interview Editor")
     
-    # Get submitted interviews
     interviews_df = editor.get_submitted_interviews()
     
     if interviews_df.empty:
         st.info("No submitted interviews available for editing.")
         return None
     
-    # Display interviews in a table with selection
     st.subheader("Select Interview to Edit")
     
-    # Add search and filter
     col1, col2, col3 = st.columns(3)
     
     with col1:
@@ -136,7 +127,6 @@ def display_interview_selector(editor):
         district_filter = st.selectbox("Filter by district:",
                                      ['All'] + list(interviews_df['district'].unique()))
     
-    # Apply filters
     filtered_df = interviews_df.copy()
     if search_term:
         filtered_df = filtered_df[filtered_df['business_name'].str.contains(search_term, case=False, na=False)]
@@ -149,10 +139,8 @@ def display_interview_selector(editor):
         st.warning("No interviews match the selected filters.")
         return None
     
-    # Display filtered interviews
     st.write(f"**Found {len(filtered_df)} interviews:**")
     
-    # Create a selection interface
     selected_index = st.selectbox(
         "Select interview to edit:",
         range(len(filtered_df)),
@@ -175,10 +163,8 @@ def display_interview_editor(editor, interview_id):
     
     st.header(f"✏️ Editing: {interview_data['business_name']}")
     
-    # Display edit history
     display_edit_history(editor, interview_id)
     
-    # Edit options
     edit_option = st.radio(
         "Edit Options:",
         ["Basic Information", "Business Details", "Compliance Procedures", "Advanced Options"],
@@ -220,7 +206,7 @@ def display_edit_history(editor, interview_id):
                         except:
                             st.write(f"  - Changes: {record[2]}")
     except:
-        pass  # Table might not exist yet
+        pass
 
 def edit_basic_information(editor, interview_id, interview_data):
     """Edit basic interview information"""
@@ -336,7 +322,6 @@ def edit_business_details(editor, interview_id, interview_data):
                 key="edit_gender_owner"
             )
         
-        # Business background
         st.subheader("Business Background")
         business_activities = st.text_area(
             "Business Activities Description *",
@@ -392,7 +377,6 @@ def edit_compliance_procedures(editor, interview_id, interview_data):
     """Edit compliance procedures data"""
     st.subheader("📑 Compliance Procedures")
     
-    # Load procedures data
     procedures_json = interview_data.get('procedure_data')
     procedures = []
     
@@ -406,12 +390,10 @@ def edit_compliance_procedures(editor, interview_id, interview_data):
         st.info("No compliance procedures data found for this interview.")
         return
     
-    # Display procedures for editing
     for i, procedure in enumerate(procedures):
         with st.expander(f"🔧 {procedure.get('procedure', 'Unknown Procedure')} - {procedure.get('authority', 'Unknown Authority')}", expanded=False):
             edit_single_procedure(editor, interview_id, procedures, i, procedure)
     
-    # Quick actions
     st.subheader("Quick Actions")
     col1, col2 = st.columns(2)
     
@@ -497,7 +479,6 @@ def recalculate_totals(editor, interview_id, procedures):
         total_cost = sum(proc.get('official_fees', 0) + proc.get('unofficial_payments', 0) for proc in procedures)
         total_time = sum(proc.get('total_days', 0) for proc in procedures)
         
-        # Calculate risk score
         risk_score = min((total_cost / 100000 + total_time / 365) * 10, 10)
         
         updates = {
@@ -518,13 +499,11 @@ def validate_procedures_data(procedures):
     warnings = []
     
     for i, proc in enumerate(procedures):
-        # Check for missing required fields
         if not proc.get('procedure'):
             errors.append(f"Procedure {i+1}: Missing procedure name")
         if not proc.get('authority'):
             errors.append(f"Procedure {i+1}: Missing regulatory authority")
         
-        # Check for data inconsistencies
         if proc.get('official_fees', 0) < 0:
             warnings.append(f"Procedure {i+1}: Official fees cannot be negative")
         if proc.get('total_days', 0) < 0:
@@ -575,13 +554,10 @@ def display_advanced_options(editor, interview_id, interview_data):
 def export_interview_data(interview_data):
     """Export interview data as JSON"""
     try:
-        # Create a clean copy without sensitive data
         export_data = {k: v for k, v in interview_data.items() if v is not None}
         
-        # Convert to JSON
         json_data = json.dumps(export_data, indent=2, default=str)
         
-        # Create download button
         st.download_button(
             label="📥 Download Interview Data (JSON)",
             data=json_data,
@@ -598,7 +574,6 @@ def delete_interview(editor, interview_id):
         cursor.execute("DELETE FROM responses WHERE interview_id = ?", (interview_id,))
         editor.conn.commit()
         
-        # Log the deletion
         editor.log_edit_action(st.session_state.current_user, interview_id, {'action': 'permanent_deletion'})
         
         st.success("✅ Interview deleted successfully!")
@@ -608,30 +583,24 @@ def delete_interview(editor, interview_id):
 
 def interview_editor_main():
     """Main function for the interview editor"""
-    # Check if user is admin
     if not st.session_state.get('admin_logged_in', False):
         st.error("🔒 Administrator access required to edit interviews.")
         return
     
-    # Initialize editor
     editor = InterviewEditor()
     
-    # Check if we're editing a specific interview
     if 'editing_interview_id' in st.session_state:
         display_interview_editor(editor, st.session_state.editing_interview_id)
         
-        # Back button
         if st.button("← Back to Interview List", key="back_to_list"):
             del st.session_state.editing_interview_id
             st.rerun()
     else:
-        # Show interview selector
         selected_interview_id = display_interview_selector(editor)
         if selected_interview_id:
             st.session_state.editing_interview_id = selected_interview_id
             st.rerun()
 
-# Standalone function for direct access
 def run_interview_editor():
     """Run interview editor as standalone app"""
     st.set_page_config(
