@@ -5,6 +5,8 @@ plotly>=5.15.0
 streamlit-tags>=1.2.0
 sqlitecloud
 pyisic >= 0.1.26
+-U kaleido
+kaleido
 
 # Data Processing & Utilities
 numpy>=1.24.0
